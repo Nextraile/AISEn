@@ -88,10 +88,15 @@ APP_UID=$(id -u) docker compose up -d --build --wait
 ```
 
 `APP_UID` makes the container run as your own user, so it can write the
-bind-mounted `./data/vector_db`; without it the app exits with
-`attempt to write a readonly database`. On PowerShell:
+bind-mounted `./data/vector_db`. On PowerShell:
 `$env:APP_UID=1000; docker compose up -d --build --wait`. The command returns
 only once the container is healthy.
+
+If the UID does not match, `docker-entrypoint.sh` stops the container before
+ChromaDB is opened and prints the owner UID, the container UID, and the exact
+command to fix it — instead of the raw `attempt to write a readonly database`
+traceback. The default is `10001`, so a plain `docker compose up` always starts
+the guard path rather than depending on the host UID.
 
 The embedding model is cached in the `model_cache` volume, so restarts do not
 re-download it. After changing `APP_UID`, run `docker compose down -v` once:
@@ -210,7 +215,7 @@ docker-compose.yml         single service + model cache volume
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
 | `/health` shows `"documents": 0` | Empty collection | Run `python ingest.py --all` |
-| `docker compose up` fails with `attempt to write a readonly database` | Bind-mounted DB owned by your UID; the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`, or `chmod -R a+rwX data/vector_db` as a stopgap |
+| `docker compose up` logs `the ChromaDB directory is not writable by this container` | Bind-mounted DB owned by a different UID than `APP_UID` | Rebuild with the printed fix: `APP_UID=$(id -u) docker compose up -d --build`, or `chmod -R a+rwX data/vector_db` as a stopgap |
 | `/health` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python ingest.py --index`; scores are meaningless otherwise |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
 | `status=list_only`, message about quota | Gemini 429 / rate limit | Wait, or raise the quota |
