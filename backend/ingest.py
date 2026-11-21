@@ -10,9 +10,10 @@ Run from `backend/` so the relative paths and the `app` import resolve:
     python ingest.py --index
     python ingest.py --query "analisis kualitas air sungai"
 
-The API and this script share `MODEL_NAME`, `DB_PATH`, `COLLECTION_NAME` and
-`THRESHOLD_DEFAULT` from `app.py`, so stored vectors and query vectors
-cannot drift apart.
+The API and this script read the same `Settings` object (see `settings.py`), so
+stored vectors and query vectors cannot drift apart on the model, the database
+path, or the collection name. Environment defaults are listed in `.env.example`;
+the CLI flags below still win over them.
 """
 
 from __future__ import annotations
@@ -24,21 +25,20 @@ import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from app import (
-    COLLECTION_NAME,
-    DB_PATH,
-    MODEL_NAME,
-    N_RESULTS,
-    THRESHOLD_DEFAULT,
-    metadata_text,
-)
+from app import metadata_text
+from settings import SETTINGS
 
-DEFAULT_ENDPOINT = "https://eprints2.undip.ac.id/cgi/oai2"
-DEFAULT_TARGET = 1000
-JSON_PATH = "data/documents.json"
-INSERT_BATCH_SIZE = 1000
-EMBED_BATCH_SIZE = 64
-MIN_DESCRIPTION_CHARS = 50
+DEFAULT_ENDPOINT = SETTINGS.oai_endpoint
+DEFAULT_TARGET = SETTINGS.ingest_target
+JSON_PATH = SETTINGS.ingest_json_path
+INSERT_BATCH_SIZE = SETTINGS.insert_batch_size
+EMBED_BATCH_SIZE = SETTINGS.embed_batch_size
+MIN_DESCRIPTION_CHARS = SETTINGS.min_description_chars
+COLLECTION_NAME = SETTINGS.collection_name
+DB_PATH = SETTINGS.db_path
+MODEL_NAME = SETTINGS.model_name
+N_RESULTS = SETTINGS.n_results
+THRESHOLD_DEFAULT = SETTINGS.threshold_default
 
 log = logging.getLogger("aisen.ingest")
 
@@ -184,7 +184,7 @@ def build_index(
 
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": "cosine", "embedding_model": MODEL_NAME},
     )
 
     for start in range(0, len(ids), batch_size):

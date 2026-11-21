@@ -113,7 +113,10 @@ def test_build_index_cosine_batch_dan_metadata(tmp_path):
 
     assert total == 3
     assert client.deleted == ingest.COLLECTION_NAME
-    assert client.created_metadata == {"hnsw:space": "cosine"}
+    assert client.created_metadata == {
+        "hnsw:space": "cosine",
+        "embedding_model": ingest.MODEL_NAME,
+    }
     assert [len(b["ids"]) for b in client.collection.batches] == [2, 1]
     assert client.collection.batches[0]["metadatas"][0]["creators"] == "A, B"
     assert client.collection.batches[0]["documents"][0] == "Judul 0. abstrak"

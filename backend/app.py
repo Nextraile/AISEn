@@ -12,27 +12,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 from starlette.concurrency import run_in_threadpool
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-DB_PATH = "./data/vector_db"
-COLLECTION_NAME = "undip_research_search"
-N_RESULTS = 100
+from settings import SETTINGS
+
+# Konfigurasi dibaca sekali dari environment (lihat `settings.py` dan
+# `.env.example`). Alias di bawah ini yang dipakai kode dan test; nilai
+# bawaannya identik dengan konstanta lama, jadi environment kosong berperilaku
+# sama seperti sebelumnya.
+MODEL_NAME = SETTINGS.model_name
+DB_PATH = SETTINGS.db_path
+COLLECTION_NAME = SETTINGS.collection_name
+N_RESULTS = SETTINGS.n_results
+THRESHOLD_MIN = SETTINGS.threshold_min
+THRESHOLD_MAX = SETTINGS.threshold_max
+THRESHOLD_DEFAULT = SETTINGS.threshold_default
+SUMMARY_TOP_K = SETTINGS.summary_top_k
+LLM_TIMEOUT_SECONDS = SETTINGS.llm_timeout_seconds
 
 # Threshold = kemiripan minimum (1 - jarak cosine). Makin tinggi = makin ketat.
-# Batas bawah/atas slider UI. Nilai bawaan diukur manual pada 1.000 dokumen
-# asli (eprints2): query relevan 0.58-0.73, noise <= 0.46. Lihat README
+# Batas dan nilai bawaannya bisa diatur (THRESHOLD_MIN / THRESHOLD_MAX /
+# THRESHOLD_DEFAULT); nilai bawaan diukur manual pada 1.000 dokumen asli
+# (eprints2): query relevan 0.58-0.73, noise <= 0.46. Lihat README
 # ("Why the default is 0.53") untuk tabel pengukurannya.
-THRESHOLD_MIN = 0.1
-THRESHOLD_MAX = 0.9
-THRESHOLD_DEFAULT = 0.53
 
-# Jumlah jurnal teratas yang dikirim ke LLM (angka awal, bisa disetel tim).
-SUMMARY_TOP_K = 5
-# Batas waktu menunggu LLM sebelum dianggap gagal (detik).
+# Jumlah jurnal teratas yang dikirim ke LLM (SUMMARY_TOP_K, bisa disetel).
+# Batas waktu menunggu LLM sebelum dianggap gagal (LLM_TIMEOUT_SECONDS).
 # Diukur pada data asli (1.000 dokumen, gemini-3.5-flash-lite): panggilan
 # normal 1,3-7 detik, tetapi ekor latensi dan beberapa request bersamaan
 # bisa melewati 8 detik. 15 detik menutup hampir semua kasus tanpa membuat
 # pengguna menunggu terlalu lama saat LLM benar-benar tidak merespons.
-LLM_TIMEOUT_SECONDS = 15
 
 # Arahan saat tidak ada jurnal yang lolos threshold. Bersifat diagnostik:
 # menjelaskan mengapa hasilnya kosong, tanpa menyuruh pengguna menurunkan
@@ -45,7 +52,8 @@ GUIDANCE = [
 # Logging dasar untuk observability. Di bawah uvicorn, logger aplikasi
 # tidak otomatis aktif, jadi dikonfigurasi di sini.
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    level=SETTINGS.log_level,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger("aisen.search")
 
@@ -90,6 +98,19 @@ async def lifespan(app: FastAPI):
             COLLECTION_NAME,
         )
 
+    # Model dan indeks harus sepadan. Kalau EMBEDDING_MODEL diubah tanpa
+    # `ingest.py --index`, vektor query dan vektor tersimpan berasal dari ruang
+    # berbeda: pencarian tetap jalan tetapi skornya tidak bermakna.
+    model_tercatat = (app.state.collection.metadata or {}).get("embedding_model")
+    if model_tercatat and model_tercatat != MODEL_NAME:
+        log.warning(
+            "Koleksi '%s' dibangun dengan model '%s', tetapi EMBEDDING_MODEL "
+            "sekarang '%s'. Jalankan ulang `python ingest.py --index`.",
+            COLLECTION_NAME,
+            model_tercatat,
+            MODEL_NAME,
+        )
+
     # Unduhan model pertama bisa memakan beberapa menit; tanpa log ini
     # startup terlihat seperti hang. Log ditulis SEBELUM import karena
     # `import sentence_transformers` (torch) sendiri butuh belasan detik.
@@ -124,12 +145,12 @@ app = FastAPI(
 )
 
 
-# Prototipe/demo: dibuka untuk semua origin karena API tidak memakai cookie
-# maupun kredensial. Kalau nanti dipublikasikan, ganti `allow_origins` dengan
-# origin frontend yang sebenarnya.
+# Prototipe/demo: bawaan `CORS_ALLOW_ORIGINS=*` karena API tidak memakai cookie
+# maupun kredensial. Saat dipublikasikan, isi dengan origin frontend yang
+# sebenarnya, mis. `CORS_ALLOW_ORIGINS=https://aisen.example.com`.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(SETTINGS.cors_allow_origins),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
