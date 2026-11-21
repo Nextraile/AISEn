@@ -29,5 +29,29 @@ services:
       # first model load can take ~70 seconds, and longer if EMBEDDING_MODEL is changed to a larger model.
       start_period: ${HEALTH_START_PERIOD:-120s}
 
+  # Ingestion CLI: the same image with ingest.py included (INGEST=1), so the
+  # cached torch layer is reused instead of downloaded again. The whole backend
+  # directory is mounted because the script writes ./data/documents.json as well
+  # as ./data/vector_db.
+  #
+  #   docker compose --profile tools run --rm tools ingest.py --all
+  #   docker compose --profile tools run --rm tools ingest.py --query "..."
+  tools:
+    profiles: ["tools"]
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-10001}
+        INGEST: "1"
+    env_file: .env
+    volumes:
+      # The whole backend directory, so harvest output and the DB land on the
+      # host. `ingest.py --query` therefore needs no extra mount.
+      - .:/app
+      - model_cache:/model-cache
+    # `python ingest.py ...` instead of uvicorn; the file-writability guard is
+    # for the server, and here the mount is meant to be written.
+    entrypoint: ["python"]
+
 volumes:
   model_cache:

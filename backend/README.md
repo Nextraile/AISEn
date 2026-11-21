@@ -102,6 +102,23 @@ The embedding model is cached in the `model_cache` volume, so restarts do not
 re-download it. After changing `APP_UID`, run `docker compose down -v` once:
 the old volume belongs to the previous UID.
 
+### Ingesting without installing Python on the host
+
+The serving image does not contain `ingest.py`. A second Compose service,
+`tools`, builds the same Dockerfile with `INGEST=1` — so the heavy torch layer is
+reused rather than downloaded twice — and runs the script with the repository
+mounted:
+
+```bash
+docker compose --profile tools run --rm tools ingest.py --all
+docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
+```
+
+`--profile tools` is needed because the service is hidden by default, so a plain
+`docker compose up` still starts only the API. This is the Docker-only path: no
+`pip install`, and `--query` uses the same `rank_results()` as `POST /search`,
+so its scores match the API exactly.
+
 For a demo, running uvicorn directly is simpler and has fewer moving parts.
 
 ## Configuration
