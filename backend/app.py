@@ -71,7 +71,9 @@ def _open_collection(target_app: FastAPI) -> None:
     if total_documents == 0:
         log.warning(
             "Collection '%s' is EMPTY: every search will return 'no_results' "
-            "even though the code runs fine.",
+            "even though the startup checks pass. Build the index with "
+            "`python ingest.py --all` on the host, or from Docker with "
+            "`docker compose --profile tools run --rm tools ingest.py --all`.",
             SETTINGS.collection_name,
         )
 
