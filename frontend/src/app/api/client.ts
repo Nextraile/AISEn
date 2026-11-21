@@ -27,9 +27,10 @@ import type {
   ResponseContext,
   ResponseInterceptor,
 } from "./types";
+import { config } from "../config";
 
-const DEFAULT_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "";
-const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_BASE_URL: string = config.apiBaseUrl;
+const DEFAULT_TIMEOUT_MS = config.apiTimeoutMs;
 const TOKEN_STORAGE_KEY = "access_token";
 const MAX_ERROR_DETAIL_LENGTH = 500;
 

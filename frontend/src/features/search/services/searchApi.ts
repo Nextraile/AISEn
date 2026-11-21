@@ -1,4 +1,5 @@
 import { apiClient } from "../../../app/api";
+import { config } from "../../../app/config";
 import type {
   SearchDocumentsParams,
   SearchRequestBody,
@@ -6,7 +7,7 @@ import type {
 } from "../types/search";
 
 const SEARCH_PATH = "/search";
-const DEFAULT_MAX_THRESHOLD = 0.5;
+const DEFAULT_MAX_THRESHOLD = config.defaultThreshold;
 
 export function searchDocuments(
   params: SearchDocumentsParams

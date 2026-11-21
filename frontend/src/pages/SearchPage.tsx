@@ -18,6 +18,7 @@ import {
 import SearchBar from "../features/search/components/SearchBar";
 import SearchResults from "../features/search/components/SearchResults";
 import { useSearchDocuments } from "../features/search/hooks/useSearchDocuments";
+import { config } from "../app/config";
 
 function getJournalYearRange(results: { date: string | null | undefined }[]): string | null {
   const years = results
@@ -101,14 +102,14 @@ function SearchPageContent() {
 
   const [input, setInput] = useState(query);
   const [page, setPage] = useState(1);
-  const [relevance, setRelevance] = useState(0.5);
-  const [debouncedRelevance, setDebouncedRelevance] = useState(0.5);
+  const [relevance, setRelevance] = useState(config.relevancePresets.medium);
+  const [debouncedRelevance, setDebouncedRelevance] = useState(config.relevancePresets.medium);
   const [optionsOpen, setOptionsOpen] = useState(false);
 
   const optionsRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLElement>(null);
   const [pendingCitation, setPendingCitation] = useState<number | null>(null);
-  const resultsPerPage = 10;
+  const resultsPerPage = config.resultsPerPage;
 
   const { state } = useSearchDocuments(query, debouncedRelevance);
   const loading = state.status === "loading";
@@ -146,7 +147,7 @@ function SearchPageContent() {
     const timeoutId = window.setTimeout(() => {
       setDebouncedRelevance(relevance);
       setPage(1);
-    }, 350);
+    }, config.searchDebounceMs);
 
     return () => window.clearTimeout(timeoutId);
   }, [relevance]);
@@ -308,25 +309,25 @@ function SearchPageContent() {
                     <div className="academia-relevance-options" role="group" aria-label="Relevansi data">
                       <button
                         type="button"
-                        onClick={() => setRelevance(0.4)}
-                        aria-pressed={relevance === 0.4}
-                        className={relevance === 0.4 ? "is-active" : ""}
+                        onClick={() => setRelevance(config.relevancePresets.low)}
+                        aria-pressed={relevance === config.relevancePresets.low}
+                        className={relevance === config.relevancePresets.low ? "is-active" : ""}
                       >
                         Lemah
                       </button>
                       <button
                         type="button"
-                        onClick={() => setRelevance(0.5)}
-                        aria-pressed={relevance === 0.5}
-                        className={relevance === 0.5 ? "is-active" : ""}
+                        onClick={() => setRelevance(config.relevancePresets.medium)}
+                        aria-pressed={relevance === config.relevancePresets.medium}
+                        className={relevance === config.relevancePresets.medium ? "is-active" : ""}
                       >
                         Sedang
                       </button>
                       <button
                         type="button"
-                        onClick={() => setRelevance(0.6)}
-                        aria-pressed={relevance === 0.6}
-                        className={relevance === 0.6 ? "is-active" : ""}
+                        onClick={() => setRelevance(config.relevancePresets.high)}
+                        aria-pressed={relevance === config.relevancePresets.high}
+                        className={relevance === config.relevancePresets.high ? "is-active" : ""}
                       >
                         Tinggi
                       </button>
