@@ -1,3 +1,13 @@
+"""HTTP API for the Undip semantic search demo.
+
+Conventions in this file:
+
+- Wire format is Indonesian (`peringkat`, `skor`, `judul`, ...) because the
+  frontend reads those exact keys; internal names stay English.
+- Anything a student can read (summary, `arahan`, `ringkasan_error`) is written
+  in Indonesian. Everything a developer reads (logs, comments) is English.
+"""
+
 import asyncio
 import logging
 import os
@@ -14,15 +24,12 @@ from starlette.concurrency import run_in_threadpool
 
 from settings import SETTINGS
 
-MODEL_NAME = SETTINGS.model_name
-DB_PATH = SETTINGS.db_path
-COLLECTION_NAME = SETTINGS.collection_name
-N_RESULTS = SETTINGS.n_results
+# Threshold bounds are captured by `SearchRequest` when the class is created,
+# so they must be module-level names rather than read from `SETTINGS` inline.
 THRESHOLD_MIN = SETTINGS.threshold_min
 THRESHOLD_MAX = SETTINGS.threshold_max
 THRESHOLD_DEFAULT = SETTINGS.threshold_default
-SUMMARY_TOP_K = SETTINGS.summary_top_k
-LLM_TIMEOUT_SECONDS = SETTINGS.llm_timeout_seconds
+
 GUIDANCE = [
     "Coba kalimat yang lebih spesifik.",
     "Perluas topik pencarian.",
@@ -34,69 +41,91 @@ logging.basicConfig(
 )
 log = logging.getLogger("aisen.search")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Log sebelum membuka DB
-    # Kalau direktori berada di network share (mis. \\wsl.localhost di Windows),
-    # SQLite/Chroma bisa menggantung tanpa pesan apa pun; log ini menandai tepat di mana ia berhenti.
-    log.info("Membuka ChromaDB di '%s'...", DB_PATH)
-    client = chromadb.PersistentClient(path=DB_PATH)
+
+def _open_collection(target_app: FastAPI) -> None:
+    """Open the Chroma collection and warn about anything that would make scores meaningless."""
+    # Log before touching the DB: on a network share (e.g. \\wsl.localhost from
+    # Windows) SQLite can hang silently, and this line marks where it stopped.
+    log.info("Opening ChromaDB at '%s'...", SETTINGS.db_path)
+    client = chromadb.PersistentClient(path=SETTINGS.db_path)
 
     try:
-        app.state.collection = client.get_collection(name=COLLECTION_NAME)
+        target_app.state.collection = client.get_collection(
+            name=SETTINGS.collection_name
+        )
     except chromadb.errors.NotFoundError as exc:
         raise RuntimeError(
-            f"ChromaDB collection '{COLLECTION_NAME}' was not found in '{DB_PATH}'."
-            f"Check the database path and make sure you've run the data-ingestion step."
+            f"ChromaDB collection '{SETTINGS.collection_name}' was not found in "
+            f"'{SETTINGS.db_path}'. Check CHROMA_DB_PATH and run "
+            "`python ingest.py --all` first."
         ) from exc
 
-    total_documents = app.state.collection.count()
+    collection = target_app.state.collection
+    total_documents = collection.count()
     log.info(
-        "ChromaDB siap: %d dokumen di koleksi '%s' (%s)",
+        "ChromaDB ready: %d documents in collection '%s' (%s)",
         total_documents,
-        COLLECTION_NAME,
-        DB_PATH,
+        SETTINGS.collection_name,
+        SETTINGS.db_path,
     )
     if total_documents == 0:
         log.warning(
-            "Koleksi '%s' KOSONG: semua pencarian akan mengembalikan 'no_results' meskipun kode berjalan normal.",
-            COLLECTION_NAME,
-        )
-    if (app.state.collection.metadata or {}).get("hnsw:space") != "cosine":
-        log.warning(
-            "Koleksi '%s' tidak memakai hnsw:space=cosine: skor kemiripan bisa tidak valid (threshold 0.1-0.9 jadi tidak bermakna).",
-            COLLECTION_NAME,
+            "Collection '%s' is EMPTY: every search will return 'no_results' "
+            "even though the code runs fine.",
+            SETTINGS.collection_name,
         )
 
-    # Model dan indeks harus sepadan. Kalau EMBEDDING_MODEL diubah tanpa `ingest.py --index`,
-    # vektor query dan vektor tersimpan berasal dari ruang berbeda: pencarian tetap jalan tetapi skornya tidak bermakna.
-    model_tercatat = (app.state.collection.metadata or {}).get("embedding_model")
-    if model_tercatat and model_tercatat != MODEL_NAME:
+    metadata = collection.metadata or {}
+    if metadata.get("hnsw:space") != "cosine":
         log.warning(
-            "Koleksi '%s' dibangun dengan model '%s', tetapi EMBEDDING_MODEL "
-            "sekarang '%s'. Jalankan ulang `python ingest.py --index`.",
-            COLLECTION_NAME,
-            model_tercatat,
-            MODEL_NAME,
+            "Collection '%s' does not use hnsw:space=cosine: similarity scores "
+            "are meaningless (a threshold on the 0.1-0.9 scale has no meaning).",
+            SETTINGS.collection_name,
         )
-        
-    log.info("Memuat model embedding '%s' (unduhan pertama bisa lama)...", MODEL_NAME)
 
-    # moved here to avoid torch import in tests that don't need the model.
+    # Stored vectors and query vectors must come from the same model. Changing
+    # EMBEDDING_MODEL without `ingest.py --index` still returns results, but the
+    # scores are computed in two different spaces.
+    recorded_model = metadata.get("embedding_model")
+    if recorded_model and recorded_model != SETTINGS.model_name:
+        log.warning(
+            "Collection '%s' was built with model '%s' but EMBEDDING_MODEL is "
+            "now '%s'. Re-run `python ingest.py --index`.",
+            SETTINGS.collection_name,
+            recorded_model,
+            SETTINGS.model_name,
+        )
+
+
+def _load_model(target_app: FastAPI) -> None:
+    """Create the embedding model and pick up the optional LLM configuration."""
+    log.info(
+        "Loading embedding model '%s' (the first download can take a while)...",
+        SETTINGS.model_name,
+    )
+
+    # Imported here so tests that inject a fake model never pay for the torch
+    # import, and so uvicorn logs the DB check above before the slow step.
     from sentence_transformers import SentenceTransformer
 
-    app.state.model = SentenceTransformer(MODEL_NAME)
-    log.info("Model embedding siap.")
-    app.state.summarize = summarize_with_llm
+    target_app.state.model = SentenceTransformer(SETTINGS.model_name)
+    log.info("Embedding model ready.")
+    target_app.state.summarize = summarize_with_llm
 
     gemini_model = os.getenv("GEMINI_MODEL")
     if not (os.getenv("GEMINI_API_KEY") and gemini_model):
         log.warning(
-            "GEMINI_API_KEY / GEMINI_MODEL belum diatur: ringkasan AI nonaktif, "
-            "API hanya mengembalikan daftar jurnal."
+            "GEMINI_API_KEY / GEMINI_MODEL are not set: AI summaries are "
+            "disabled and the API returns the journal list only."
         )
     else:
-        log.info("Ringkasan AI aktif dengan model Gemini '%s'.", gemini_model)
+        log.info("AI summaries enabled with Gemini model '%s'.", gemini_model)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _open_collection(app)
+    _load_model(app)
     yield
 
 
@@ -119,7 +148,9 @@ app.add_middleware(
 class SearchRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    query: str = Field(..., min_length=1, description="Free-text search query (Indonesian or English).")
+    query: str = Field(
+        ..., min_length=1, description="Free-text search query (Indonesian or English)."
+    )
     threshold: float = Field(
         default=THRESHOLD_DEFAULT,
         validation_alias=AliasChoices("threshold", "max_threshold"),
@@ -133,8 +164,8 @@ class SearchRequest(BaseModel):
 
 
 class SearchResult(BaseModel):
-    peringkat: int
-    skor: float
+    peringkat: int  # 1-based position after threshold filtering
+    skor: float  # similarity, higher = closer
     judul: str
     penulis: str
     deskripsi: str
@@ -147,70 +178,77 @@ class SearchResponse(BaseModel):
     threshold: float
     count: int
     results: list[SearchResult]
-    # full       : ringkasan AI + daftar jurnal
-    # list_only  : LLM gagal, daftar jurnal saja (alasannya di `ringkasan_error`)
-    # no_results : tidak ada jurnal lolos threshold, lihat `arahan`
+    # full       : AI summary + journal list
+    # list_only  : LLM failed, journal list only (reason in `ringkasan_error`)
+    # no_results : nothing passed the threshold, see `arahan`
     status: Literal["full", "list_only", "no_results"]
-    ringkasan: str | None = None  # sitasi berformat [n], n = `peringkat`
-    ringkasan_error: str | None = None  # pesan untuk pengguna; coba lagi manual
-    # Kemiripan tertinggi yang ditemukan walau tidak lolos threshold.
-    # Membantu menilai apakah threshold kebablasan ketat atau DB-nya kosong.
+    ringkasan: str | None = None  # citations are [n], n = `peringkat`
+    ringkasan_error: str | None = None  # message for the user; they retry manually
+    # Best similarity found even though it missed the threshold. It tells apart
+    # "threshold is very strict" from "the database is empty".
     skor_tertinggi: float | None = None
     arahan: list[str] = Field(default_factory=list)
 
+    # `type: ignore` below is the known mypy/Pydantic ordering quirk around
+    # `@computed_field` on a property, not a suppressed bug.
     @computed_field  # type: ignore[prop-decorator]
     @property
     def max_threshold(self) -> float:
-        """Alias lama untuk `threshold` (dipakai frontend). Akan dihapus
-        setelah klien pindah ke `threshold`; nilainya selalu sama."""
+        """Legacy alias for `threshold` used by the frontend. Always equal to it."""
         return self.threshold
 
+
 class LLMError(Exception):
-    """Pesan exception ini ditampilkan ke pengguna, jadi tulis dalam Indonesia."""
+    """The message is shown to users, so write it in Indonesian."""
+
+
+class SummaryError(Exception):
+    """Internal signal: the summary step failed, mapped to `ringkasan_error`."""
+
+
+PROMPT_TEMPLATE = (
+    "Anda adalah asisten riset. Tulis ringkasan singkat dalam bahasa Indonesia "
+    "tentang isi, temuan utama, atau pola yang muncul dari jurnal yang disajikan. "
+    "Gunakan HANYA sumber di bawah ini; jangan menambah fakta atau angka. "
+    "Panjang maksimal 3 paragraf dan 180 kata. Utamakan poin paling relevan, "
+    "hindari pengantar panjang dan jangan mengulang judul jurnal. "
+    "Setiap klaim faktual wajib memiliki sitasi [n] sesuai nomor sumber. "
+    "Tulis sitasi satu per satu, misalnya [1] [2] [3], jangan digabung "
+    "menjadi satu kurung seperti [1, 2, 3]. "
+    "Gunakan Markdown sederhana hanya untuk penekanan penting (**teks**) bila perlu. "
+    "Jika sumber tidak cukup, katakan secara singkat.\n\n"
+    "Pertanyaan pengguna: {query}\n\nSumber jurnal:\n{sources}"
+)
+
 
 def build_prompt(query: str, results: list[SearchResult]) -> str:
     sources = "\n\n".join(f"[{r.peringkat}] {r.judul}\n{r.deskripsi}" for r in results)
-    return (
-        "Anda adalah asisten riset. Tulis ringkasan singkat dalam bahasa Indonesia "
-        "tentang isi, temuan utama, atau pola yang muncul dari jurnal yang disajikan. "
-        "Gunakan HANYA sumber di bawah ini; jangan menambah fakta atau angka. "
-        "Panjang maksimal 3 paragraf dan 180 kata. Utamakan poin paling relevan, "
-        "hindari pengantar panjang dan jangan mengulang judul jurnal. "
-        "Setiap klaim faktual wajib memiliki sitasi [n] sesuai nomor sumber. "
-        "Tulis sitasi satu per satu, misalnya [1] [2] [3], jangan digabung "
-        "menjadi satu kurung seperti [1, 2, 3]. "
-        "Gunakan Markdown sederhana hanya untuk penekanan penting (**teks**) bila perlu. "
-        "Jika sumber tidak cukup, katakan secara singkat.\n\n"
-        f"Pertanyaan pengguna: {query}\n\nSumber jurnal:\n{sources}"
-    )
+    return PROMPT_TEMPLATE.format(query=query, sources=sources)
 
 
 _CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 
 def sanitize_citations(text: str, valid: set[int]) -> str:
-    """Buang sitasi [n] yang nomornya tidak ada di sumber yang dikirim ke LLM.
+    """Drop citations whose number is not among the sources sent to the LLM.
 
-    Sitasi gabungan seperti [1, 2, 3] dipecah menjadi [1] [2] [3] agar setiap
-    nomor bisa diklik satu per satu di UI.
+    Combined citations such as [1, 2, 3] are split into [1] [2] [3] so each
+    number can be clicked separately in the UI.
     """
 
-    def keep(m: re.Match) -> str:
-        nomor = [int(n) for n in m.group(1).split(",")]
-        dipakai = [n for n in nomor if n in valid]
-
-        for n in nomor:
-            if n not in valid:
-                log.warning("Sitasi tidak valid dibuang: [%s]", n)
-
-        return " ".join(f"[{n}]" for n in dipakai)
+    def keep(match: re.Match) -> str:
+        numbers = [int(n) for n in match.group(1).split(",")]
+        kept = [n for n in numbers if n in valid]
+        dropped = [n for n in numbers if n not in valid]
+        if dropped:
+            log.warning("Dropped invalid citations: %s", dropped)
+        return " ".join(f"[{n}]" for n in kept)
 
     return _CITATION.sub(keep, text)
 
 
 def summarize_with_llm(query: str, results: list[SearchResult]) -> str:
-    """Panggil Gemini. Tanpa retry otomatis: gagal -> LLMError, pengguna
-    mencoba lagi secara manual."""
+    """Call Gemini. No automatic retry: failures become `LLMError` and the user retries."""
     api_key = os.getenv("GEMINI_API_KEY")
     model = os.getenv("GEMINI_MODEL")
     if not (api_key and model):
@@ -230,7 +268,7 @@ def summarize_with_llm(query: str, results: list[SearchResult]) -> str:
                 "Kuota atau batas permintaan LLM tercapai. Coba lagi sebentar lagi."
             ) from exc
         if exc.code == 404:
-            # Paling sering: GEMINI_MODEL salah/ sudah tidak tersedia.
+            # Most often GEMINI_MODEL is wrong or the model was retired.
             raise LLMError(
                 f"Model LLM '{model}' tidak ditemukan. Periksa nilai GEMINI_MODEL."
             ) from exc
@@ -246,10 +284,12 @@ def summarize_with_llm(query: str, results: list[SearchResult]) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    # Untuk pengecekan hidup/mati dan jumlah dokumen ter-index.
-    # `llm_configured` membuat konfigurasi Gemini bisa dicek sebelum demo
-    # tanpa harus menembak /search; `metric` memastikan koleksi memakai cosine
-    # (kalau tidak, `skor` di /search tidak bermakna).
+    """Liveness probe plus the facts needed to sanity-check a demo before running it.
+
+    `llm_configured` avoids having to hit /search to see whether Gemini is set
+    up; `metric` must be `cosine`, otherwise `skor` in /search is not a
+    similarity at all.
+    """
     return {
         "status": "ok",
         "documents": app.state.collection.count(),
@@ -260,45 +300,34 @@ def health() -> dict:
     }
 
 
-def metadata_text(metadata: dict, key: str) -> str:
-    """Ambil metadata dengan aman.
+def metadata_text(metadata: dict | None, key: str) -> str:
+    """Read one metadata field as a string, never raising.
 
-    Bentuk metadata dimiliki `ingest.py`. Kalau satu dokumen saja
-    kehilangan key (atau tipenya bukan string), jangan sampai seluruh
-    pencarian jadi 500.
+    The metadata shape belongs to `ingest.py`; a single document missing a key,
+    or carrying a non-string value, must not turn the whole search into a 500.
     """
-    if not metadata:  # None atau {} (dokumen tanpa metadata sama sekali)
+    if not metadata:  # None or {} (document stored without metadata)
         return ""
     value = metadata.get(key)
     return "" if value is None else str(value)
 
 
-@app.post("/search", response_model=SearchResponse)
-async def search(payload: SearchRequest) -> SearchResponse:
-    started = time.perf_counter()
-    model = app.state.model
-    collection = app.state.collection
+def rank_results(
+    metadatas: list, distances: list, min_similarity: float
+) -> list[SearchResult]:
+    """Filter by similarity and build the ranked result list.
 
-    query_vector = await run_in_threadpool(model.encode, payload.query)
-    query_vector = query_vector.tolist()
-
-    raw = await run_in_threadpool(
-        collection.query,
-        query_embeddings=[query_vector],
-        n_results=N_RESULTS,
-        include=["metadatas", "distances"],
-    )
-
+    Shared with `ingest.query_demo()`, so `--query` reports exactly what
+    POST /search would return.
+    """
     results: list[SearchResult] = []
-    rank = 0
-    for metadata, distance in zip(raw["metadatas"][0], raw["distances"][0]):
-        similarity = round(1.0 - distance, 6)  # dibulatkan agar perbandingan stabil
-        if similarity < payload.threshold:
+    for metadata, distance in zip(metadatas, distances):
+        similarity = round(1.0 - distance, 6)  # rounded so comparisons are stable
+        if similarity < min_similarity:
             continue
-        rank += 1
         results.append(
             SearchResult(
-                peringkat=rank,
+                peringkat=len(results) + 1,
                 skor=similarity,
                 judul=metadata_text(metadata, "title"),
                 penulis=metadata_text(metadata, "creators"),
@@ -307,47 +336,74 @@ async def search(payload: SearchRequest) -> SearchResponse:
                 date=metadata_text(metadata, "date"),
             )
         )
+    return results
+
+
+def _no_results_hints(
+    threshold: float, distances: list
+) -> tuple[float | None, list[str]]:
+    """Explain an empty result set without ever suggesting a lower threshold."""
+    if not distances:
+        return None, ["Belum ada dokumen terindeks di basis data."]
+    best = round(1.0 - distances[0], 6)
+    return best, [
+        f"Tidak ada jurnal yang mencapai ambang kemiripan {threshold:.2f}.",
+        f"Kemiripan tertinggi yang ditemukan: {best:.2f}.",
+        *GUIDANCE,
+    ]
+
+
+async def _summarize(query: str, results: list[SearchResult]) -> str:
+    """Run the summary step with a timeout, translating failures for the user."""
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(
+                app.state.summarize, query, results[: SETTINGS.summary_top_k]
+            ),
+            timeout=SETTINGS.llm_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        log.warning("LLM timed out after %ss", SETTINGS.llm_timeout_seconds)
+        raise SummaryError("LLM tidak merespons tepat waktu. Coba lagi.") from None
+    except LLMError as exc:
+        log.warning("LLM failed: %s", exc)
+        raise SummaryError(str(exc)) from exc
+    except Exception:
+        log.exception("LLM failed (unexpected error)")
+        raise SummaryError("Ringkasan gagal dibuat. Coba lagi.") from None
+
+
+@app.post("/search", response_model=SearchResponse)
+async def search(payload: SearchRequest) -> SearchResponse:
+    started = time.perf_counter()
+
+    embedding = await run_in_threadpool(app.state.model.encode, payload.query)
+    raw = await run_in_threadpool(
+        app.state.collection.query,
+        query_embeddings=[embedding.tolist()],
+        n_results=SETTINGS.n_results,
+        include=["metadatas", "distances"],
+    )
+
+    metadatas = raw["metadatas"][0] if raw["metadatas"] else []
+    distances = raw["distances"][0] if raw["distances"] else []
+    results = rank_results(metadatas, distances, payload.threshold)
 
     ringkasan = None
     ringkasan_error = None
-    skor_tertinggi: float | None = None
+    skor_tertinggi = None
     arahan: list[str] = []
+
     if not results:
         status = "no_results"
-        distances = raw["distances"][0] if raw["distances"] else []
-        if distances:
-            skor_tertinggi = round(1.0 - distances[0], 6)
-            arahan = [
-                f"Tidak ada jurnal yang mencapai ambang kemiripan "
-                f"{payload.threshold:.2f}.",
-                f"Kemiripan tertinggi yang ditemukan: {skor_tertinggi:.2f}.",
-                *GUIDANCE,
-            ]
-        else:
-            arahan = [
-                "Belum ada dokumen terindeks di basis data.",
-            ]
+        skor_tertinggi, arahan = _no_results_hints(payload.threshold, distances)
     else:
         try:
-            ringkasan = await asyncio.wait_for(
-                run_in_threadpool(
-                    app.state.summarize, payload.query, results[:SUMMARY_TOP_K]
-                ),
-                timeout=LLM_TIMEOUT_SECONDS,
-            )
+            ringkasan = await _summarize(payload.query, results)
             status = "full"
-        except asyncio.TimeoutError:
-            log.warning("LLM timeout setelah %ss", LLM_TIMEOUT_SECONDS)
-            status = "list_only"
-            ringkasan_error = "LLM tidak merespons tepat waktu. Coba lagi."
-        except LLMError as exc:
-            log.warning("LLM gagal: %s", exc)
+        except SummaryError as exc:
             status = "list_only"
             ringkasan_error = str(exc)
-        except Exception:
-            log.exception("LLM gagal (error tak terduga)")
-            status = "list_only"
-            ringkasan_error = "Ringkasan gagal dibuat. Coba lagi."
 
     log.info(
         "search status=%s count=%d threshold=%.2f duration_ms=%.0f",

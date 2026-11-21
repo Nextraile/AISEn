@@ -4,8 +4,8 @@ from settings import Settings
 
 
 # ---------- defaults ----------
-def test_defaults_sama_dengan_konstanta_lama():
-    # Environment kosong harus berperilaku persis seperti sebelum config dipindah.
+def test_defaults_match_previous_constants():
+    # An empty environment must behave exactly as before the config move.
     s = Settings.from_env({})
     assert s.model_name == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     assert s.db_path == "./data/vector_db"
@@ -23,7 +23,7 @@ def test_defaults_sama_dengan_konstanta_lama():
     assert s.min_description_chars == 50
 
 
-def test_override_tipe_dibaca_benar():
+def test_overrides_are_read_with_the_right_type():
     s = Settings.from_env(
         {
             "EMBEDDING_MODEL": "  model/lain  ",
@@ -34,41 +34,41 @@ def test_override_tipe_dibaca_benar():
             "THRESHOLD_DEFAULT": "0.6",
         }
     )
-    assert s.model_name == "model/lain"  # spasi dibuang
+    assert s.model_name == "model/lain"  # whitespace stripped
     assert s.db_path == "/tmp/db"
     assert s.n_results == 20
     assert s.llm_timeout_seconds == 2.5
-    assert s.log_level == "WARNING"  # dinormalisasi ke huruf besar
+    assert s.log_level == "WARNING"  # normalised to upper case
     assert s.threshold_default == 0.6
 
 
-def test_cors_daftar_dipisah_koma():
+def test_cors_list_is_comma_separated():
     assert Settings.from_env(
         {"CORS_ALLOW_ORIGINS": "https://a.example, https://b.example"}
     ).cors_allow_origins == ("https://a.example", "https://b.example")
 
 
-def test_nilai_kosong_diabaikan():
-    # `.env` yang berisi `SEARCH_N_RESULTS=` jangan bikin startup gagal.
+def test_empty_values_are_ignored():
+    # A `.env` file containing `SEARCH_N_RESULTS=` must not break startup.
     s = Settings.from_env({"SEARCH_N_RESULTS": "", "LOG_LEVEL": "  "})
     assert s.n_results == 100
     assert s.log_level == "INFO"
 
 
-def test_cors_kosong_kembali_ke_default():
+def test_empty_cors_falls_back_to_default():
     assert Settings.from_env({"CORS_ALLOW_ORIGINS": " , "}).cors_allow_origins == ("*",)
 
 
-# ---------- validasi ----------
+# ---------- validation ----------
 @pytest.mark.parametrize(
     "env",
     [
-        {"SEARCH_N_RESULTS": "banyak"},
-        {"LLM_TIMEOUT_SECONDS": "cepat"},
-        {"THRESHOLD_DEFAULT": "tinggi"},
+        {"SEARCH_N_RESULTS": "many"},
+        {"LLM_TIMEOUT_SECONDS": "fast"},
+        {"THRESHOLD_DEFAULT": "high"},
     ],
 )
-def test_angka_tidak_valid_menyebut_nama_variabel(env):
+def test_invalid_number_names_the_variable(env):
     name = next(iter(env))
     with pytest.raises(ValueError, match=name):
         Settings.from_env(env)
@@ -77,20 +77,21 @@ def test_angka_tidak_valid_menyebut_nama_variabel(env):
 @pytest.mark.parametrize(
     "env",
     [
-        {"THRESHOLD_DEFAULT": "0.05"},  # di bawah MIN
-        {"THRESHOLD_DEFAULT": "0.95"},  # di atas MAX
-        {"THRESHOLD_MIN": "0.6", "THRESHOLD_DEFAULT": "0.55"},  # tidak konsisten
-        {"THRESHOLD_MAX": "1.5"},  # di luar 0..1
-        {"SUMMARY_TOP_K": "200"},  # lebih besar dari N_RESULTS
+        {"THRESHOLD_DEFAULT": "0.05"},  # below MIN
+        {"THRESHOLD_DEFAULT": "0.95"},  # above MAX
+        {"THRESHOLD_MIN": "0.6", "THRESHOLD_DEFAULT": "0.55"},  # inconsistent
+        {"THRESHOLD_MAX": "1.5"},  # outside 0..1
+        {"SUMMARY_TOP_K": "200"},  # greater than N_RESULTS
         {"LOG_LEVEL": "VERBOSE"},
-        {"INSERT_BATCH_SIZE": "6000"},  # di atas batas ChromaDB
+        {"INSERT_BATCH_SIZE": "6000"},  # above the ChromaDB limit
         {"EMBED_BATCH_SIZE": "0"},
     ],
 )
-def test_kombinasi_tidak_valid_ditolak(env):
-    with pytest.raises(ValueError, match="Konfigurasi tidak valid"):
+def test_invalid_combination_rejected(env):
+    with pytest.raises(ValueError, match="Invalid configuration"):
         Settings.from_env(env)
 
 
-def test_validate_mengembalikan_self_saat_valid():
+def test_validate_returns_self_when_valid():
+    # Returns `self` so `from_env()` can build and validate in one expression.
     assert Settings().validate() == Settings()
