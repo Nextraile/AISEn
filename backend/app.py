@@ -14,10 +14,6 @@ from starlette.concurrency import run_in_threadpool
 
 from settings import SETTINGS
 
-# Konfigurasi dibaca sekali dari environment (lihat `settings.py` dan
-# `.env.example`). Alias di bawah ini yang dipakai kode dan test; nilai
-# bawaannya identik dengan konstanta lama, jadi environment kosong berperilaku
-# sama seperti sebelumnya.
 MODEL_NAME = SETTINGS.model_name
 DB_PATH = SETTINGS.db_path
 COLLECTION_NAME = SETTINGS.collection_name
@@ -27,43 +23,22 @@ THRESHOLD_MAX = SETTINGS.threshold_max
 THRESHOLD_DEFAULT = SETTINGS.threshold_default
 SUMMARY_TOP_K = SETTINGS.summary_top_k
 LLM_TIMEOUT_SECONDS = SETTINGS.llm_timeout_seconds
-
-# Threshold = kemiripan minimum (1 - jarak cosine). Makin tinggi = makin ketat.
-# Batas dan nilai bawaannya bisa diatur (THRESHOLD_MIN / THRESHOLD_MAX /
-# THRESHOLD_DEFAULT); nilai bawaan diukur manual pada 1.000 dokumen asli
-# (eprints2): query relevan 0.58-0.73, noise <= 0.46. Lihat README
-# ("Why the default is 0.53") untuk tabel pengukurannya.
-
-# Jumlah jurnal teratas yang dikirim ke LLM (SUMMARY_TOP_K, bisa disetel).
-# Batas waktu menunggu LLM sebelum dianggap gagal (LLM_TIMEOUT_SECONDS).
-# Diukur pada data asli (1.000 dokumen, gemini-3.5-flash-lite): panggilan
-# normal 1,3-7 detik, tetapi ekor latensi dan beberapa request bersamaan
-# bisa melewati 8 detik. 15 detik menutup hampir semua kasus tanpa membuat
-# pengguna menunggu terlalu lama saat LLM benar-benar tidak merespons.
-
-# Arahan saat tidak ada jurnal yang lolos threshold. Bersifat diagnostik:
-# menjelaskan mengapa hasilnya kosong, tanpa menyuruh pengguna menurunkan
-# ambang relevansi. Hasil kosong adalah jawaban yang sah.
 GUIDANCE = [
-    "Coba kata kunci yang lebih spesifik.",
+    "Coba kalimat yang lebih spesifik.",
     "Perluas topik pencarian.",
 ]
 
-# Logging dasar untuk observability. Di bawah uvicorn, logger aplikasi
-# tidak otomatis aktif, jadi dikonfigurasi di sini.
 logging.basicConfig(
     level=SETTINGS.log_level,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger("aisen.search")
 
-
-# Validasi startup (dari app.py versi tim, dipertahankan)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Log sebelum membuka DB. Kalau direktori berada di network share
-    # (mis. \\wsl.localhost di Windows), SQLite/Chroma bisa menggantung
-    # tanpa pesan apa pun; log ini menandai tepat di mana ia berhenti.
+    # Log sebelum membuka DB
+    # Kalau direktori berada di network share (mis. \\wsl.localhost di Windows),
+    # SQLite/Chroma bisa menggantung tanpa pesan apa pun; log ini menandai tepat di mana ia berhenti.
     log.info("Membuka ChromaDB di '%s'...", DB_PATH)
     client = chromadb.PersistentClient(path=DB_PATH)
 
@@ -71,13 +46,10 @@ async def lifespan(app: FastAPI):
         app.state.collection = client.get_collection(name=COLLECTION_NAME)
     except chromadb.errors.NotFoundError as exc:
         raise RuntimeError(
-            f"ChromaDB collection '{COLLECTION_NAME}' was not found "
-            f"in '{DB_PATH}'. Check the database path and make sure "
-            "you've run the data-ingestion step."
+            f"ChromaDB collection '{COLLECTION_NAME}' was not found in '{DB_PATH}'."
+            f"Check the database path and make sure you've run the data-ingestion step."
         ) from exc
 
-    # Terlihat jelas di log: salah path DB / DB kosong jangan sampai
-    # baru ketahuan saat demo (gejalanya cuma "tidak ada hasil").
     total_documents = app.state.collection.count()
     log.info(
         "ChromaDB siap: %d dokumen di koleksi '%s' (%s)",
@@ -87,20 +59,17 @@ async def lifespan(app: FastAPI):
     )
     if total_documents == 0:
         log.warning(
-            "Koleksi '%s' KOSONG: semua pencarian akan mengembalikan "
-            "'no_results' meskipun kode berjalan normal.",
+            "Koleksi '%s' KOSONG: semua pencarian akan mengembalikan 'no_results' meskipun kode berjalan normal.",
             COLLECTION_NAME,
         )
     if (app.state.collection.metadata or {}).get("hnsw:space") != "cosine":
         log.warning(
-            "Koleksi '%s' tidak memakai hnsw:space=cosine: skor kemiripan "
-            "bisa tidak valid (threshold 0.1-0.9 jadi tidak bermakna).",
+            "Koleksi '%s' tidak memakai hnsw:space=cosine: skor kemiripan bisa tidak valid (threshold 0.1-0.9 jadi tidak bermakna).",
             COLLECTION_NAME,
         )
 
-    # Model dan indeks harus sepadan. Kalau EMBEDDING_MODEL diubah tanpa
-    # `ingest.py --index`, vektor query dan vektor tersimpan berasal dari ruang
-    # berbeda: pencarian tetap jalan tetapi skornya tidak bermakna.
+    # Model dan indeks harus sepadan. Kalau EMBEDDING_MODEL diubah tanpa `ingest.py --index`,
+    # vektor query dan vektor tersimpan berasal dari ruang berbeda: pencarian tetap jalan tetapi skornya tidak bermakna.
     model_tercatat = (app.state.collection.metadata or {}).get("embedding_model")
     if model_tercatat and model_tercatat != MODEL_NAME:
         log.warning(
@@ -110,19 +79,15 @@ async def lifespan(app: FastAPI):
             model_tercatat,
             MODEL_NAME,
         )
-
-    # Unduhan model pertama bisa memakan beberapa menit; tanpa log ini
-    # startup terlihat seperti hang. Log ditulis SEBELUM import karena
-    # `import sentence_transformers` (torch) sendiri butuh belasan detik.
+        
     log.info("Memuat model embedding '%s' (unduhan pertama bisa lama)...", MODEL_NAME)
 
-    # Import dipindah ke sini agar test yang tidak butuh model
-    # tidak perlu memuat torch.
+    # moved here to avoid torch import in tests that don't need the model.
     from sentence_transformers import SentenceTransformer
 
     app.state.model = SentenceTransformer(MODEL_NAME)
     log.info("Model embedding siap.")
-    app.state.summarize = summarize_with_llm  # mudah diganti saat test
+    app.state.summarize = summarize_with_llm
 
     gemini_model = os.getenv("GEMINI_MODEL")
     if not (os.getenv("GEMINI_API_KEY") and gemini_model):
@@ -131,8 +96,6 @@ async def lifespan(app: FastAPI):
             "API hanya mengembalikan daftar jurnal."
         )
     else:
-        # Nama model yang salah tidak membuat startup gagal; tanpa log ini
-        # ringkasan AI "menghilang" tanpa jejak.
         log.info("Ringkasan AI aktif dengan model Gemini '%s'.", gemini_model)
     yield
 
@@ -144,10 +107,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-# Prototipe/demo: bawaan `CORS_ALLOW_ORIGINS=*` karena API tidak memakai cookie
-# maupun kredensial. Saat dipublikasikan, isi dengan origin frontend yang
-# sebenarnya, mis. `CORS_ALLOW_ORIGINS=https://aisen.example.com`.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(SETTINGS.cors_allow_origins),
@@ -158,12 +117,9 @@ app.add_middleware(
 
 
 class SearchRequest(BaseModel):
-    # Spasi di awal/akhir dibuang, jadi query "   " ditolak (min_length=1).
     model_config = ConfigDict(str_strip_whitespace=True)
 
     query: str = Field(..., min_length=1, description="Free-text search query (Indonesian or English).")
-    # `max_threshold` adalah nama lama yang masih dipakai klien frontend.
-    # Nilainya SELALU kemiripan minimum (makin tinggi makin ketat), bukan jarak.
     threshold: float = Field(
         default=THRESHOLD_DEFAULT,
         validation_alias=AliasChoices("threshold", "max_threshold"),
@@ -178,7 +134,7 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     peringkat: int
-    skor: float  # BERUBAH: kemiripan (makin tinggi makin mirip), bukan jarak
+    skor: float
     judul: str
     penulis: str
     deskripsi: str
@@ -188,14 +144,12 @@ class SearchResult(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
-    # `threshold` tetap nama kanonis untuk klien baru.
     threshold: float
     count: int
     results: list[SearchResult]
-    # Field tambahan:
-    #   full       -> ringkasan AI + daftar jurnal
-    #   list_only  -> LLM gagal, daftar jurnal saja (alasannya di `ringkasan_error`)
-    #   no_results -> tidak ada jurnal lolos threshold, lihat `arahan`
+    # full       : ringkasan AI + daftar jurnal
+    # list_only  : LLM gagal, daftar jurnal saja (alasannya di `ringkasan_error`)
+    # no_results : tidak ada jurnal lolos threshold, lihat `arahan`
     status: Literal["full", "list_only", "no_results"]
     ringkasan: str | None = None  # sitasi berformat [n], n = `peringkat`
     ringkasan_error: str | None = None  # pesan untuk pengguna; coba lagi manual
@@ -211,11 +165,8 @@ class SearchResponse(BaseModel):
         setelah klien pindah ke `threshold`; nilainya selalu sama."""
         return self.threshold
 
-
-# ---- LLM (Google Gemini API) -----------------------------------------------
 class LLMError(Exception):
     """Pesan exception ini ditampilkan ke pengguna, jadi tulis dalam Indonesia."""
-
 
 def build_prompt(query: str, results: list[SearchResult]) -> str:
     sources = "\n\n".join(f"[{r.peringkat}] {r.judul}\n{r.deskripsi}" for r in results)
@@ -357,7 +308,6 @@ async def search(payload: SearchRequest) -> SearchResponse:
             )
         )
 
-    # Cabang flowchart setelah threshold
     ringkasan = None
     ringkasan_error = None
     skor_tertinggi: float | None = None
@@ -366,9 +316,6 @@ async def search(payload: SearchRequest) -> SearchResponse:
         status = "no_results"
         distances = raw["distances"][0] if raw["distances"] else []
         if distances:
-            # Laporkan fakta: ambang yang dipakai dan skor tertinggi yang ada.
-            # Tidak menyarankan menurunkan threshold, karena ambang itu memang
-            # penjaga relevansi dan hasil kosong adalah jawaban yang sah.
             skor_tertinggi = round(1.0 - distances[0], 6)
             arahan = [
                 f"Tidak ada jurnal yang mencapai ambang kemiripan "
@@ -377,11 +324,8 @@ async def search(payload: SearchRequest) -> SearchResponse:
                 *GUIDANCE,
             ]
         else:
-            # DB kosong / belum di-ingest: jangan menyarankan menurunkan
-            # threshold, itu menyesatkan.
             arahan = [
                 "Belum ada dokumen terindeks di basis data.",
-                "Jalankan python ingest.py --all untuk mengisi basis data.",
             ]
     else:
         try:

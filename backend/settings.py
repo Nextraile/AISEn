@@ -8,10 +8,6 @@ from disagreeing about the model, the database path, or the threshold.
 Run the service from `backend/` and pass the file with `uvicorn --env-file .env`
 (Docker Compose reads the same file via `env_file`). Every variable is listed in
 `.env.example`.
-
-Note: `GEMINI_API_KEY` / `GEMINI_MODEL` are deliberately *not* handled here. They
-are optional, and the API reads them at call time so tests can add or remove them
-per test.
 """
 
 from __future__ import annotations
@@ -40,8 +36,7 @@ DEFAULT_EMBED_BATCH_SIZE = 64
 DEFAULT_MIN_DESCRIPTION_CHARS = 50
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-# ChromaDB rejects insert batches above roughly 5,461 records.
-CHROMA_MAX_BATCH = 5461
+CHROMA_MAX_BATCH = 5461 # ChromaDB rejects insert batches above roughly 5,461 records.
 
 
 def _text(env: Mapping[str, str], name: str, default: str) -> str:
