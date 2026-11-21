@@ -5,20 +5,19 @@ services:
     build:
       context: .
       args:
-        # Samakan dengan UID host agar bind-mount ./data/vector_db bisa
-        # ditulis container. Linux/WSL: APP_UID=$(id -u) docker compose up
+        # Match the host UID so the bind-mounted ./data/vector_db is writable by the container
+        # Linux/WSL: APP_UID=$(id -u) docker compose up
         # PowerShell: $env:APP_UID=1000; docker compose up
+
         APP_UID: ${APP_UID:-10001}
     env_file: .env
     ports:
-      # Hanya port sisi host yang bisa diatur; container tetap 8000.
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./data/vector_db:/app/data/vector_db
       - model_cache:/model-cache
     restart: unless-stopped
     healthcheck:
-      # `docker compose up --wait` menunggu ini, bukan sekadar container start.
       test:
         - CMD
         - python
@@ -27,8 +26,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      # Muat model pertama kali bisa ~70 detik, dan lebih lama kalau
-      # EMBEDDING_MODEL diganti dengan model yang lebih besar.
+      # first model load can take ~70 seconds, and longer if EMBEDDING_MODEL is changed to a larger model.
       start_period: ${HEALTH_START_PERIOD:-120s}
 
 volumes:

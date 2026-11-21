@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# UID pengguna container. Samakan dengan UID host kalau ./data/vector_db
-# di-bind-mount: kalau berbeda, SQLite menolak menulis dan startup gagal
-# dengan "attempt to write a readonly database".
+# UID container user. Match with host UID if ./data/vector_db is bind-mounted
+# if different, SQLite refuses to write and startup fails with "attempt to write a readonly database".
+
 ARG APP_UID=10001
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
