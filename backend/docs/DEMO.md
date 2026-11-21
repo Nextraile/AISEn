@@ -8,11 +8,11 @@ when something does not cooperate. Written for the prototype as it exists today.
 - [ ] `cp .env.example .env`, then fill `GEMINI_API_KEY` and `GEMINI_MODEL`.
   Confirm the model name is currently available — a retired name does not break
   startup, it silently downgrades every answer to `list_only`.
-- [ ] Confirm `./eprints_vector_db` exists on **the laptop you will present
+- [ ] Confirm `./data/vector_db` exists on **the laptop you will present
   from**. If you built it on another machine, copy the whole directory.
 - [ ] Start the app once so the embedding model downloads:
   ```bash
-  uvicorn backend:app --reload --port 8000 --env-file .env
+  uvicorn app:app --reload --port 8000 --env-file .env
   ```
   `--env-file` is what actually feeds `GEMINI_API_KEY` / `GEMINI_MODEL` to a local
   run — without it the API quietly degrades to `list_only`.
@@ -52,7 +52,7 @@ when something does not cooperate. Written for the prototype as it exists today.
 
 - [ ] Start the server:
   ```bash
-  uvicorn backend:app --port 8000 --env-file .env
+  uvicorn app:app --port 8000 --env-file .env
   ```
   Prefer this over `docker compose` — fewer moving parts and the model cache is
   already warm.

@@ -46,7 +46,7 @@ The service never fails a search because the LLM failed: the worst case is
 **Prerequisites**
 
 - Python 3.11+
-- The vector database in `./eprints_vector_db` — **the app refuses to start
+- The vector database in `./data/vector_db` — **the app refuses to start
   without it**. See [docs/DATA.md](docs/DATA.md) for how to build it.
 - `GEMINI_API_KEY` and `GEMINI_MODEL` in `.env` (optional; without them the API
   still works and returns `status=list_only`).
@@ -54,8 +54,8 @@ The service never fails a search because the LLM failed: the worst case is
 ```bash
 cp .env.example .env                      # fill in both Gemini values
 pip install -r requirements.txt
-python ingest.py --all                    # only if eprints_vector_db/ is missing
-uvicorn backend:app --reload --port 8000 --env-file .env
+python ingest.py --all                    # only if data/vector_db/ is missing
+uvicorn app:app --reload --port 8000 --env-file .env
 ```
 
 `--env-file` is required locally: the app reads plain environment variables and
@@ -87,7 +87,7 @@ APP_UID=$(id -u) docker compose up -d --build --wait
 ```
 
 `APP_UID` makes the container run as your own user, so it can write the
-bind-mounted `./eprints_vector_db`; without it the app exits with
+bind-mounted `./data/vector_db`; without it the app exits with
 `attempt to write a readonly database`. On PowerShell:
 `$env:APP_UID=1000; docker compose up -d --build --wait`. The command returns
 only once the container is healthy.
@@ -131,7 +131,7 @@ response, so both names always agree.
 It is a relevance gate, not a knob for "make sure something comes back". An
 empty result is a valid answer.
 
-The default (`0.53`, `THRESHOLD_DEFAULT` in `backend.py`) was measured on the 1,000-record
+The default (`0.53`, `THRESHOLD_DEFAULT` in `app.py`) was measured on the 1,000-record
 collection, not guessed. The method: score a set of phrasal queries that should
 match and a set of off-topic queries that should not, then take the midpoint
 **only if the two bands separate**. On the shipped corpus they do.
@@ -159,9 +159,9 @@ bands overlap, fix retrieval rather than inventing a threshold.
 ## Project structure
 
 ```
-backend.py                 the entire service: lifespan, schemas, /search, /health, Gemini
+app.py                 the entire service: lifespan, schemas, /search, /health, Gemini
 ingest.py                  the only ingestion path: OAI-PMH -> JSON -> embeddings -> Chroma
-tests/test_backend.py      API tests; fake model and fake collection, no downloads
+tests/test_app.py      API tests; fake model and fake collection, no downloads
 tests/test_ingest.py       ingestion tests; fake records, model, and Chroma client
 docs/API.md                API reference
 docs/DATA.md               ingestion pipeline and metadata contract
@@ -178,7 +178,7 @@ docker-compose.yml         single service + model cache volume
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
 | `/health` shows `"documents": 0` | Empty collection | Run `python ingest.py --all` |
-| `docker compose up` fails with `attempt to write a readonly database` | Bind-mounted DB owned by your UID; the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`, or `chmod -R a+rwX eprints_vector_db` as a stopgap |
+| `docker compose up` fails with `attempt to write a readonly database` | Bind-mounted DB owned by your UID; the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`, or `chmod -R a+rwX data/vector_db` as a stopgap |
 | `/health` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python ingest.py --index`; scores are meaningless otherwise |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
 | `status=list_only`, message about quota | Gemini 429 / rate limit | Wait, or raise the quota |

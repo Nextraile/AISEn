@@ -21,14 +21,14 @@ a plain Vite app, so the rules below apply as-is.
 
 Each service assumes its own directory as the working directory.
 
-Backend — `DB_PATH = "./eprints_vector_db"`, `pytest.ini` (`pythonpath = .`),
+Backend — `DB_PATH = "./data/vector_db"`, `pytest.ini` (`pythonpath = .`),
 and `--env-file .env` are all relative to `backend/`:
 
 ```bash
 cd backend
 pip install -r requirements.txt
-python ingest.py --all                     # only when eprints_vector_db/ is missing
-uvicorn backend:app --reload --port 8000 --env-file .env
+python ingest.py --all                     # only when data/vector_db/ is missing
+uvicorn app:app --reload --port 8000 --env-file .env
 pytest
 APP_UID=$(id -u) docker compose up -d --build --wait
 ```
@@ -43,14 +43,14 @@ npm run build      # tsc -b && vite build
 npm run lint
 ```
 
-Backend commands fail from the monorepo root: `backend.py` will not be
+Backend commands fail from the monorepo root: `app.py` will not be
 importable and the vector DB will not be found. npm commands fail from the root
 because there is no root `package.json`.
 
 ## Conventions
 
 - Do not commit secrets or generated data. `backend/.env`,
-  `backend/eprints_vector_db/` and `backend/eprints_undip_clean.json` are
+  `backend/data/vector_db/` and `backend/data/documents.json` are
   git-ignored; `backend/.env.example` documents the required variables.
 - `frontend/.env` is committed on purpose: it holds a single non-secret value,
   `VITE_API_BASE_URL`. Everything secret belongs in the backend.

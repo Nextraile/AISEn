@@ -19,7 +19,7 @@ AGENTS.md     monorepo-level rules for contributors and agents
 ```
 
 Each service is self-contained. Run every command from inside its own
-directory — paths such as `DB_PATH = "./eprints_vector_db"` and
+directory — paths such as `DB_PATH = "./data/vector_db"` and
 `--env-file .env` are relative to `backend/`.
 
 ## Requirements
@@ -41,8 +41,8 @@ Two terminals, backend first.
 cd backend
 pip install -r requirements.txt
 cp .env.example .env                     # fill GEMINI_API_KEY and GEMINI_MODEL
-python ingest.py --all                   # only when eprints_vector_db/ is missing
-uvicorn backend:app --reload --port 8000 --env-file .env
+python ingest.py --all                   # only when data/vector_db/ is missing
+uvicorn app:app --reload --port 8000 --env-file .env
 ```
 
 ```bash
@@ -87,6 +87,6 @@ guidance instead of a list.
 
 ## Data is not in the repository
 
-`backend/eprints_vector_db/` and `backend/eprints_undip_clean.json` are
+`backend/data/vector_db/` and `backend/data/documents.json` are
 git-ignored. A fresh clone has no index: run `python ingest.py --all` in
 `backend/` to harvest the Undip OAI-PMH feed and build the collection.

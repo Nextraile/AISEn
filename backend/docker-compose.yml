@@ -5,7 +5,7 @@ services:
     build:
       context: .
       args:
-        # Samakan dengan UID host agar bind-mount ./eprints_vector_db bisa
+        # Samakan dengan UID host agar bind-mount ./data/vector_db bisa
         # ditulis container. Linux/WSL: APP_UID=$(id -u) docker compose up
         # PowerShell: $env:APP_UID=1000; docker compose up
         APP_UID: ${APP_UID:-10001}
@@ -13,7 +13,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./eprints_vector_db:/app/eprints_vector_db
+      - ./data/vector_db:/app/data/vector_db
       - model_cache:/model-cache
     restart: unless-stopped
     healthcheck:

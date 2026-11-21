@@ -3,7 +3,7 @@
 Harvests OAI-PMH records from the Undip eprints repository, writes a clean
 JSON file, and builds the Chroma collection the API serves.
 
-Run from `backend/` so the relative paths and the `backend` import resolve:
+Run from `backend/` so the relative paths and the `app` import resolve:
 
     python ingest.py --all
     python ingest.py --harvest --target 1000
@@ -11,7 +11,7 @@ Run from `backend/` so the relative paths and the `backend` import resolve:
     python ingest.py --query "analisis kualitas air sungai"
 
 The API and this script share `MODEL_NAME`, `DB_PATH`, `COLLECTION_NAME` and
-`THRESHOLD_DEFAULT` from `backend.py`, so stored vectors and query vectors
+`THRESHOLD_DEFAULT` from `app.py`, so stored vectors and query vectors
 cannot drift apart.
 """
 
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from backend import (
+from app import (
     COLLECTION_NAME,
     DB_PATH,
     MODEL_NAME,
@@ -35,7 +35,7 @@ from backend import (
 
 DEFAULT_ENDPOINT = "https://eprints2.undip.ac.id/cgi/oai2"
 DEFAULT_TARGET = 1000
-JSON_PATH = "eprints_undip_clean.json"
+JSON_PATH = "data/documents.json"
 INSERT_BATCH_SIZE = 1000
 EMBED_BATCH_SIZE = 64
 MIN_DESCRIPTION_CHARS = 50

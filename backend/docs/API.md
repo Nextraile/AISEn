@@ -1,7 +1,7 @@
 # API Reference
 
 Complete contract for the Undip Research Semantic Search API. Every field,
-status, and error below matches `backend.py` (app version `0.2.0`).
+status, and error below matches `app.py` (app version `0.2.0`).
 
 - Base URL (local): `http://localhost:8000`
 - Content type: `application/json` for requests and responses
@@ -61,7 +61,7 @@ verbatim throughout this document:
 | Field | Type | Required | Constraints | Notes |
 |---|---|---|---|---|
 | `query` | string | yes | at least 1 character **after** trimming | Leading/trailing whitespace is stripped, so `"   "` is rejected. No maximum length. Indonesian and English both work. |
-| `threshold` | number | no | `0.1 ≤ threshold ≤ 0.9` | Default `0.53`. Minimum similarity; higher is stricter. Bounds are `THRESHOLD_MIN` / `THRESHOLD_MAX` / `THRESHOLD_DEFAULT` in `backend.py`. The default is measured on the shipped corpus; see [Why the default is 0.53](../README.md#why-the-default-is-053). |
+| `threshold` | number | no | `0.1 ≤ threshold ≤ 0.9` | Default `0.53`. Minimum similarity; higher is stricter. Bounds are `THRESHOLD_MIN` / `THRESHOLD_MAX` / `THRESHOLD_DEFAULT` in `app.py`. The default is measured on the shipped corpus; see [Why the default is 0.53](../README.md#why-the-default-is-053). |
 | `max_threshold` | number | no | same as `threshold` | **Deprecated alias** kept for the existing frontend. Same minimum-similarity scale, not a distance. If both are sent, `threshold` wins. |
 
 There is no `offset`, `page`, or `limit` parameter.
@@ -353,7 +353,7 @@ Use `/health` before a demo; use `/search` to prove the LLM actually responds.
 
 ## CORS
 
-Prototype configuration (`backend.py:119-125`): all origins, all methods, all
+Prototype configuration (`app.py:119-125`): all origins, all methods, all
 headers, credentials disabled.
 
 ```

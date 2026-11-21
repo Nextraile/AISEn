@@ -13,7 +13,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 from starlette.concurrency import run_in_threadpool
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-DB_PATH = "./eprints_vector_db"
+DB_PATH = "./data/vector_db"
 COLLECTION_NAME = "undip_research_search"
 N_RESULTS = 100
 
@@ -50,7 +50,7 @@ logging.basicConfig(
 log = logging.getLogger("aisen.search")
 
 
-# Validasi startup (dari backend.py versi tim, dipertahankan)
+# Validasi startup (dari app.py versi tim, dipertahankan)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Log sebelum membuka DB. Kalau direktori berada di network share

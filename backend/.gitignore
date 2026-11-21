@@ -1,5 +1,4 @@
-eprints_undip_clean.json
-/eprints_vector_db
+/data/
 __pycache__/
 .pytest_cache/
 .env

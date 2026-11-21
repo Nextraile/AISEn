@@ -5,7 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from google.genai import errors as genai_errors
 
-import backend
+import app
+from app import app as api
 
 
 class FakeModel:
@@ -45,10 +46,10 @@ class FakeCollection:
 def make_client(distances, summarize=None, metadatas=None):
     # TestClient dipakai TANPA `with`, jadi lifespan (model + ChromaDB asli)
     # tidak dijalankan; komponen diganti dengan yang palsu.
-    backend.app.state.model = FakeModel()
-    backend.app.state.collection = FakeCollection(distances, metadatas)
-    backend.app.state.summarize = summarize or (lambda q, r: "Ringkasan [1]")
-    return TestClient(backend.app)
+    app.app.state.model = FakeModel()
+    app.app.state.collection = FakeCollection(distances, metadatas)
+    app.app.state.summarize = summarize or (lambda q, r: "Ringkasan [1]")
+    return TestClient(api)
 
 
 # ---------- validasi input ----------
@@ -57,10 +58,10 @@ def make_client(distances, summarize=None, metadatas=None):
     [
         {"query": ""},
         {"query": "   "},
-        {"query": "kemiskinan", "threshold": backend.THRESHOLD_MAX + 0.01},
-        {"query": "kemiskinan", "threshold": backend.THRESHOLD_MIN - 0.01},
-        {"query": "kemiskinan", "max_threshold": backend.THRESHOLD_MAX + 0.01},
-        {"query": "kemiskinan", "max_threshold": backend.THRESHOLD_MIN - 0.01},
+        {"query": "kemiskinan", "threshold": app.THRESHOLD_MAX + 0.01},
+        {"query": "kemiskinan", "threshold": app.THRESHOLD_MIN - 0.01},
+        {"query": "kemiskinan", "max_threshold": app.THRESHOLD_MAX + 0.01},
+        {"query": "kemiskinan", "max_threshold": app.THRESHOLD_MIN - 0.01},
         {},
     ],
 )
@@ -70,7 +71,7 @@ def test_input_tidak_valid_ditolak(body):
 
 def test_threshold_pada_batas_diterima():
     c = make_client([0.1])
-    for t in (backend.THRESHOLD_MIN, backend.THRESHOLD_MAX):
+    for t in (app.THRESHOLD_MIN, app.THRESHOLD_MAX):
         assert c.post("/search", json={"query": "x", "threshold": t}).status_code == 200
 
 
@@ -103,14 +104,14 @@ def test_tidak_ada_jurnal_lolos_memberi_arahan():
 def test_threshold_bawaan_menyaring_di_batas_ukur():
     # Jarak 0.45 -> kemiripan 0.55: lolos di default hasil kalibrasi.
     body = make_client([0.45]).post("/search", json={"query": "x"}).json()
-    assert body["threshold"] == backend.THRESHOLD_DEFAULT
+    assert body["threshold"] == app.THRESHOLD_DEFAULT
     assert body["count"] == 1
 
 
 def test_threshold_bawaan_menolak_skor_di_bawahnya():
     # Jarak 0.5 -> kemiripan 0.5: di bawah default, jadi hasil kosong.
     body = make_client([0.5]).post("/search", json={"query": "x"}).json()
-    assert body["threshold"] == backend.THRESHOLD_DEFAULT
+    assert body["threshold"] == app.THRESHOLD_DEFAULT
     assert body["status"] == "no_results"
 
 
@@ -126,7 +127,7 @@ def test_max_threshold_diterima_sebagai_alias_kemiripan():
 
 def test_respons_memuat_nama_lama_dan_baru():
     body = make_client([0.1]).post("/search", json={"query": "x"}).json()
-    assert body["threshold"] == backend.THRESHOLD_DEFAULT
+    assert body["threshold"] == app.THRESHOLD_DEFAULT
     assert body["max_threshold"] == body["threshold"]  # alias lama, selalu sinkron
 
 
@@ -205,7 +206,7 @@ def test_hasil_lengkap_dengan_ringkasan():
 
 def test_llm_gagal_fallback_dan_pesan_error():
     def broken(q, r):
-        raise backend.LLMError("Kuota habis.")
+        raise app.LLMError("Kuota habis.")
 
     body = make_client([0.1, 0.2], summarize=broken).post(
         "/search", json={"query": "x"}
@@ -226,7 +227,7 @@ def test_error_tak_terduga_tidak_membocorkan_detail():
 
 
 def test_llm_timeout(monkeypatch):
-    monkeypatch.setattr(backend, "LLM_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(app, "LLM_TIMEOUT_SECONDS", 0.05)
 
     def lambat(q, r):
         time.sleep(0.3)
@@ -247,15 +248,15 @@ def test_llm_hanya_menerima_top_k():
     make_client([0.01 * i for i in range(20)], summarize=spy).post(
         "/search", json={"query": "x", "threshold": 0.5}
     )
-    assert received["n"] == backend.SUMMARY_TOP_K
+    assert received["n"] == app.SUMMARY_TOP_K
 
 
 # ---------- LLM: konfigurasi, error, sitasi ----------
 def test_llm_belum_dikonfigurasi(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    with pytest.raises(backend.LLMError, match="belum dikonfigurasi"):
-        backend.summarize_with_llm("x", [])
+    with pytest.raises(app.LLMError, match="belum dikonfigurasi"):
+        app.summarize_with_llm("x", [])
 
 
 class _FakeModels:
@@ -281,7 +282,7 @@ def _patch_client(monkeypatch, behavior):
 
 def _hasil(n):
     return [
-        backend.SearchResult(
+        app.SearchResult(
             peringkat=i, skor=0.9, judul=f"J{i}", penulis="A",
             deskripsi="d", url="u", date="2021",
         )
@@ -294,8 +295,8 @@ def test_llm_429_jadi_pesan_kuota(monkeypatch):
         raise genai_errors.APIError(429, {"error": {"message": "quota"}})
 
     _patch_client(monkeypatch, raise_429)
-    with pytest.raises(backend.LLMError, match="Kuota"):
-        backend.summarize_with_llm("x", _hasil(2))
+    with pytest.raises(app.LLMError, match="Kuota"):
+        app.summarize_with_llm("x", _hasil(2))
 
 
 def test_llm_model_tidak_dikenal_jadi_pesan_jelas(monkeypatch):
@@ -304,8 +305,8 @@ def test_llm_model_tidak_dikenal_jadi_pesan_jelas(monkeypatch):
         raise genai_errors.APIError(404, {"error": {"message": "model not found"}})
 
     _patch_client(monkeypatch, raise_404)
-    with pytest.raises(backend.LLMError, match="GEMINI_MODEL"):
-        backend.summarize_with_llm("x", _hasil(2))
+    with pytest.raises(app.LLMError, match="GEMINI_MODEL"):
+        app.summarize_with_llm("x", _hasil(2))
 
 
 def test_llm_teks_kosong_dianggap_gagal(monkeypatch):
@@ -313,8 +314,8 @@ def test_llm_teks_kosong_dianggap_gagal(monkeypatch):
         text = "   "
 
     _patch_client(monkeypatch, lambda: Resp())
-    with pytest.raises(backend.LLMError, match="tidak menghasilkan"):
-        backend.summarize_with_llm("x", _hasil(2))
+    with pytest.raises(app.LLMError, match="tidak menghasilkan"):
+        app.summarize_with_llm("x", _hasil(2))
 
 
 def test_llm_sukses_dan_sitasi_tidak_valid_dibuang(monkeypatch):
@@ -322,21 +323,21 @@ def test_llm_sukses_dan_sitasi_tidak_valid_dibuang(monkeypatch):
         text = "Kemiskinan menurun [1][2]. Klaim lain [7]."
 
     _patch_client(monkeypatch, lambda: Resp())
-    out = backend.summarize_with_llm("x", _hasil(2))
+    out = app.summarize_with_llm("x", _hasil(2))
     assert "[1]" in out and "[2]" in out
     assert "[7]" not in out
 
 
 def test_sitasi_gabungan_dipecah_jadi_satu_per_satu():
     # Model kadang tetap menulis [1, 2, 3]; UI butuh [1] [2] [3].
-    out = backend.sanitize_citations("A [1, 2, 3]. B [7].", {1, 2, 3})
+    out = app.sanitize_citations("A [1, 2, 3]. B [7].", {1, 2, 3})
     assert "[1] [2] [3]" in out
     assert "[7]" not in out
     assert "[1, 2, 3]" not in out
 
 
 def test_prompt_memuat_instruksi_sitasi_dan_sumber():
-    prompt = backend.build_prompt("kemiskinan", _hasil(2))
+    prompt = app.build_prompt("kemiskinan", _hasil(2))
     assert "kemiskinan" in prompt
     assert "[1]" in prompt and "[2]" in prompt
     assert "180 kata" in prompt
@@ -362,7 +363,7 @@ def test_health_menandai_llm_terkonfigurasi(monkeypatch):
 
 
 def test_startup_gagal_jelas_bila_koleksi_tidak_ada(tmp_path, monkeypatch):
-    monkeypatch.setattr(backend, "DB_PATH", str(tmp_path / "kosong"))
+    monkeypatch.setattr(app, "DB_PATH", str(tmp_path / "kosong"))
     with pytest.raises(RuntimeError, match="was not found"):
-        with TestClient(backend.app):
+        with TestClient(api):
             pass

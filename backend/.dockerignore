@@ -6,5 +6,4 @@ __pycache__
 *.py[cod]
 .env
 .env.*
-eprints_undip_clean.json
-eprints_vector_db
+data

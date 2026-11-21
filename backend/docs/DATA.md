@@ -3,8 +3,8 @@
 How the vector database gets built, and the contract the service depends on.
 Everything here happens in `ingest.py` — there is no other ingestion path.
 
-> The app reads `./eprints_vector_db` and refuses to start without it. That
-> directory and `eprints_undip_clean.json` are git-ignored, so a fresh clone has
+> The app reads `./data/vector_db` and refuses to start without it. That
+> directory and `data/documents.json` are git-ignored, so a fresh clone has
 > no data until you run `python ingest.py --all`.
 
 ## Pipeline overview
@@ -13,10 +13,10 @@ Everything here happens in `ingest.py` — there is no other ingestion path.
 OAI-PMH (eprints2.undip.ac.id/cgi/oai2)
         │  harvest + filter
         ▼
-eprints_undip_clean.json          (~1,000 records)
+data/documents.json          (~1,000 records)
         │  embed "{title}. {description}"
         ▼
-eprints_vector_db/                 ChromaDB, collection "undip_research_search"
+data/vector_db/                 ChromaDB, collection "undip_research_search"
 ```
 
 ## Stage 1 — Harvest
@@ -46,7 +46,7 @@ Extraction rules:
 | `url` | first `dc:identifier` containing `http` |
 | `date` | first `dc:date`, else `"Tanggal tidak diketahui"` |
 
-Result is written to `eprints_undip_clean.json`.
+Result is written to `data/documents.json`.
 
 Because harvesting stops at 1,000, the indexed corpus is an **early-page sample**
 of the OAI feed, not a random or complete sample of Undip's repository.
@@ -73,7 +73,7 @@ title plus the opening of the abstract — not the whole document.
 
 ## Metadata contract
 
-`ingest.py` owns the metadata shape; `backend.py` reads it. Change both together.
+`ingest.py` owns the metadata shape; `app.py` reads it. Change both together.
 
 | Chroma metadata key | Source | Returned as | Notes |
 |---|---|---|---|
@@ -96,7 +96,7 @@ a similarity. `/health` reports the metric so this is checkable.
    python ingest.py --all
    ```
 
-   That harvests `eprints2` into `eprints_undip_clean.json`, then deletes and
+   That harvests `eprints2` into `data/documents.json`, then deletes and
    recreates the Chroma collection. Use `--harvest` / `--index` to run one stage,
    `--target N` to change the record count, and `--query "..."` for a
    similarity check against the fresh index.
@@ -120,7 +120,7 @@ covers harvesting as well as serving.
   network access to the Undip OAI endpoint, which is outside this repository's
   control.
 - `ingest.py` imports `MODEL_NAME`, `DB_PATH`, `COLLECTION_NAME`, and
-  `THRESHOLD_DEFAULT` from `backend.py`, so ingestion and serving cannot drift
+  `THRESHOLD_DEFAULT` from `app.py`, so ingestion and serving cannot drift
   onto different models, paths, or defaults.
 - The embedding model is referenced by name, not by revision. An upstream model
   update would silently produce vectors that no longer match queries.
@@ -132,10 +132,10 @@ covers harvesting as well as serving.
 | `ModuleNotFoundError: sickle` | Dependencies not installed | `pip install -r requirements.txt` |
 | Harvest logs an exception and stops | OAI endpoint unreachable or rate-limited | Retry later; check the endpoint in a browser |
 | Fewer than 1,000 records saved | The OAI stream ended early | Read the log and re-run; the count is not a filter problem |
-| `eprints_undip_clean.json` missing after an error | `json.dump` only runs after a successful harvest loop | Re-run `python ingest.py --harvest` |
+| `data/documents.json` missing after an error | `json.dump` only runs after a successful harvest loop | Re-run `python ingest.py --harvest` |
 | Chroma rejects an insert batch | Batch over the ~5,461 cap | Keep the 1,000-record batching |
 | `documents: 0` in `/health` after ingest | Wrong `DB_PATH` (relative to CWD) | Run `ingest.py` and the server from `backend/` |
 | Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python ingest.py --index` |
-| Docker sees no data | `./eprints_vector_db` missing on the host | Build it on the host; compose bind-mounts it |
-| Container exits with `attempt to write a readonly database` | The bind-mounted DB is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; `chmod -R a+rwX eprints_vector_db` is a stopgap |
+| Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts it |
+| Container exits with `attempt to write a readonly database` | The bind-mounted DB is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; `chmod -R a+rwX data/vector_db` is a stopgap |
 | `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | `docker compose down -v`, then rebuild |
