@@ -11,7 +11,8 @@ services:
         APP_UID: ${APP_UID:-10001}
     env_file: .env
     ports:
-      - "8000:8000"
+      # Hanya port sisi host yang bisa diatur; container tetap 8000.
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./data/vector_db:/app/data/vector_db
       - model_cache:/model-cache
@@ -26,8 +27,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      # Muat model pertama kali bisa ~70 detik.
-      start_period: 120s
+      # Muat model pertama kali bisa ~70 detik, dan lebih lama kalau
+      # EMBEDDING_MODEL diganti dengan model yang lebih besar.
+      start_period: ${HEALTH_START_PERIOD:-120s}
 
 volumes:
   model_cache:
