@@ -62,7 +62,8 @@ uvicorn app:app --reload --port 8000 --env-file .env
 does not load `.env` by itself (Docker Compose injects the file for you). Without
 it, searches still work but every response is `list_only`.
 
-`DB_PATH` is relative, so always start uvicorn from this directory (`backend/`).
+`CHROMA_DB_PATH` is relative, so always start uvicorn from this directory
+(`backend/`).
 
 **Verify it works**
 
@@ -100,15 +101,42 @@ For a demo, running uvicorn directly is simpler and has fewer moving parts.
 
 ## Configuration
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `GEMINI_API_KEY` | for AI summaries | Google Gemini API key |
-| `GEMINI_MODEL` | for AI summaries | Model name, e.g. `gemini-2.5-flash`. A wrong name does not break startup — `/search` returns `list_only` with a message pointing at this variable |
+Everything is optional: with an empty `.env` the service runs on the defaults
+below, which are the values that were measured and shipped. Set only what you
+need. `.env.example` is the full inventory with the reasoning for each value.
 
-Both are read from the process environment at request time. Locally, `.env` is
-loaded at startup by `uvicorn --env-file .env`; Docker Compose loads it via
-`env_file:`. Editing the file requires a restart either way. `.env` is
-git-ignored; never commit it.
+| Variable | Default | Meaning |
+|---|---|---|
+| `GEMINI_API_KEY` | — | Google Gemini API key. Without it summaries are disabled |
+| `GEMINI_MODEL` | — | Model name, e.g. `gemini-2.5-flash`. A wrong name does not break startup — `/search` returns `list_only` pointing at this variable |
+| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Must match the model the collection was built with. A mismatch is logged at startup |
+| `CHROMA_DB_PATH` | `./data/vector_db` | ChromaDB directory, relative to `backend/` |
+| `CHROMA_COLLECTION` | `undip_research_search` | Collection name |
+| `SEARCH_N_RESULTS` | `100` | Candidates fetched per query; also the maximum result count |
+| `THRESHOLD_MIN` / `THRESHOLD_MAX` | `0.1` / `0.9` | Accepted range for the request's `threshold` |
+| `THRESHOLD_DEFAULT` | `0.53` | Applied when a request omits the threshold |
+| `SUMMARY_TOP_K` | `5` | Results handed to the LLM; must be ≤ `SEARCH_N_RESULTS` |
+| `LLM_TIMEOUT_SECONDS` | `15` | Gemini budget before falling back to `list_only` |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed origins |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `OAI_ENDPOINT` | `https://eprints2.undip.ac.id/cgi/oai2` | Harvest source |
+| `INGEST_TARGET` | `1000` | Valid records to harvest |
+| `INGEST_JSON_PATH` | `data/documents.json` | Harvest output |
+| `INSERT_BATCH_SIZE` | `1000` | Records per ChromaDB insert (cap ≈ 5,461) |
+| `EMBED_BATCH_SIZE` | `64` | Documents per embedding batch |
+| `MIN_DESCRIPTION_CHARS` | `50` | Harvest filter: skip shorter abstracts |
+
+Ingestion flags (`--target`, `--endpoint`, `--json`, `--db`) still override the
+corresponding variables for a single run.
+
+Invalid combinations stop the process at import time with a message naming the
+offending variable — for example `THRESHOLD_DEFAULT` outside `MIN..MAX`,
+`SUMMARY_TOP_K > SEARCH_N_RESULTS`, or an unknown `LOG_LEVEL`. Nothing starts
+half-configured.
+
+Variables are read once at import. Locally `.env` is loaded by
+`uvicorn --env-file .env`; Docker Compose loads it via `env_file:`. Editing the
+file requires a restart either way. `.env` is git-ignored; never commit it.
 
 ## API at a glance
 
@@ -159,13 +187,17 @@ bands overlap, fix retrieval rather than inventing a threshold.
 ## Project structure
 
 ```
-app.py                 the entire service: lifespan, schemas, /search, /health, Gemini
+app.py                     the entire service: lifespan, schemas, /search, /health, Gemini
+settings.py                every configurable value, read once from the environment
 ingest.py                  the only ingestion path: OAI-PMH -> JSON -> embeddings -> Chroma
-tests/test_app.py      API tests; fake model and fake collection, no downloads
+data/                      generated, git-ignored (vector_db/ and documents.json)
+tests/test_app.py          API tests; fake model and fake collection, no downloads
 tests/test_ingest.py       ingestion tests; fake records, model, and Chroma client
+tests/test_settings.py     config parsing and validation
 docs/API.md                API reference
 docs/DATA.md               ingestion pipeline and metadata contract
 docs/DEMO.md               pre-meeting checklist and demo runbook
+.env.example               full configuration inventory
 Dockerfile                 CPU-only image, non-root user
 docker-compose.yml         single service + model cache volume
 ```

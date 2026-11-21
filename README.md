@@ -15,7 +15,6 @@ slider, result cards, and the AI summary.
 ```
 backend/      FastAPI service: embedding, ChromaDB search, Gemini summary, ingestion
 frontend/     React 19 + TypeScript + Vite UI (Tailwind 4)
-AGENTS.md     monorepo-level rules for contributors and agents
 ```
 
 Each service is self-contained. Run every command from inside its own
@@ -58,9 +57,11 @@ npm ci
 npm run dev
 ```
 
-`frontend/.env` sets `VITE_API_BASE_URL=http://localhost:8000`. Point it at
-another host if the API runs elsewhere. CORS is open on the backend, so the Vite
-dev server works as-is.
+`frontend/.env` sets `VITE_API_BASE_URL=http://localhost:8000` plus the UI
+tuning values; `.env.example` documents each. Vite inlines them at build time,
+so changes need a rebuild. Point the base URL at another host if the API runs
+elsewhere. CORS is open on the backend by default, so the Vite dev server works
+as-is.
 
 ## How the two halves meet
 
@@ -84,6 +85,8 @@ guidance instead of a list.
 | [backend/docs/DEMO.md](backend/docs/DEMO.md) | pre-demo checklist and talking points |
 | [backend/AGENTS.md](backend/AGENTS.md) | backend internals and invariants |
 | [frontend/src/app/api/README.md](frontend/src/app/api/README.md) | the frontend's HTTP client wrapper |
+| [backend/.env.example](backend/.env.example) | every backend setting, with defaults |
+| [frontend/.env.example](frontend/.env.example) | every frontend setting, with defaults |
 
 ## Data is not in the repository
 

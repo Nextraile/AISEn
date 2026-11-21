@@ -6,6 +6,8 @@ when something does not cooperate. Written for the prototype as it exists today.
 ## The day before
 
 - [ ] `cp .env.example .env`, then fill `GEMINI_API_KEY` and `GEMINI_MODEL`.
+  Nothing else is required; every other variable has a working default.
+  Leave the rest commented or unchanged unless the demo needs it.
   Confirm the model name is currently available — a retired name does not break
   startup, it silently downgrades every answer to `list_only`.
 - [ ] Confirm `./data/vector_db` exists on **the laptop you will present
@@ -41,6 +43,8 @@ when something does not cooperate. Written for the prototype as it exists today.
   Expect results around 0.66. Then try an off-topic phrase such as
   `resep rendang padang`; it should score about 0.46. If relevant and off-topic
   scores overlap, fix retrieval rather than changing `THRESHOLD_DEFAULT`.
+  (If you changed it in `.env`, remember it must stay between `THRESHOLD_MIN`
+  and `THRESHOLD_MAX`, otherwise the service refuses to start.)
 - [ ] Run one full query end to end. A response with
   `"status": "full"` and a non-empty `ringkasan` is the only proof that the LLM
   path works.

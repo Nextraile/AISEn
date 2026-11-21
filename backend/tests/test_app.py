@@ -69,6 +69,77 @@ def test_input_tidak_valid_ditolak(body):
     assert make_client([0.1]).post("/search", json=body).status_code == 422
 
 
+# ---------- konfigurasi lewat environment ----------
+def test_batas_threshold_dari_environment_dipakai(monkeypatch):
+    # Batas threshold kini pengaturan deployment, bukan konstanta mati.
+    # Pydantic memvalidasi `ge`/`le` saat kelas dibuat, jadi modul di-reload
+    # dengan environment baru: ini yang membuktikan nilai dari env benar-benar
+    # sampai ke request.
+    import importlib
+
+    import settings
+
+    monkeypatch.setenv("THRESHOLD_MIN", "0.4")
+    monkeypatch.setenv("THRESHOLD_MAX", "0.5")
+    monkeypatch.setenv("THRESHOLD_DEFAULT", "0.45")
+    try:
+        importlib.reload(settings)
+        reloaded = importlib.reload(app)
+        reloaded.app.state.model = FakeModel()
+        reloaded.app.state.collection = FakeCollection([0.1])
+        reloaded.app.state.summarize = lambda q, r: "Ringkasan [1]"
+        client = TestClient(reloaded.app)
+        assert client.post(
+            "/search", json={"query": "x", "threshold": 0.45}
+        ).status_code == 200
+        assert client.post(
+            "/search", json={"query": "x", "threshold": 0.7}
+        ).status_code == 422
+    finally:
+        for name in ("THRESHOLD_MIN", "THRESHOLD_MAX", "THRESHOLD_DEFAULT"):
+            monkeypatch.delenv(name, raising=False)
+        importlib.reload(settings)
+        importlib.reload(app)  # kembalikan modul ke keadaan bawaan
+
+
+def test_n_results_dari_environment_dipakai(monkeypatch):
+    # `from settings import SETTINGS` mengikat objeknya saat import, jadi
+    # mengubah os.environ saja tidak cukup: `settings` juga harus di-reload.
+    # Inilah urutan yang dipakai uvicorn/Compose saat proses benar-benar start.
+    import importlib
+
+    import settings
+
+    monkeypatch.setenv("SEARCH_N_RESULTS", "7")
+    try:
+        importlib.reload(settings)
+        reloaded = importlib.reload(app)
+
+        seen = {}
+
+        class Rp(FakeCollection):
+            def query(self, query_embeddings, n_results, include):
+                seen["n_results"] = n_results
+                return super().query(query_embeddings, n_results, include)
+
+        reloaded.app.state.model = FakeModel()
+        reloaded.app.state.collection = Rp([0.9])
+        reloaded.app.state.summarize = lambda q, r: "Ringkasan [1]"
+        TestClient(reloaded.app).post("/search", json={"query": "x"})
+
+        assert reloaded.N_RESULTS == 7
+        assert seen["n_results"] == 7
+    finally:
+        monkeypatch.delenv("SEARCH_N_RESULTS", raising=False)
+        importlib.reload(settings)
+        importlib.reload(app)
+
+
+def test_cors_mengikuti_environment():
+    kwargs = app.app.user_middleware[0].kwargs
+    assert kwargs["allow_origins"] == list(app.SETTINGS.cors_allow_origins)
+
+
 def test_threshold_pada_batas_diterima():
     c = make_client([0.1])
     for t in (app.THRESHOLD_MIN, app.THRESHOLD_MAX):

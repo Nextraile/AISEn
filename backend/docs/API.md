@@ -61,7 +61,7 @@ verbatim throughout this document:
 | Field | Type | Required | Constraints | Notes |
 |---|---|---|---|---|
 | `query` | string | yes | at least 1 character **after** trimming | Leading/trailing whitespace is stripped, so `"   "` is rejected. No maximum length. Indonesian and English both work. |
-| `threshold` | number | no | `0.1 ≤ threshold ≤ 0.9` | Default `0.53`. Minimum similarity; higher is stricter. Bounds are `THRESHOLD_MIN` / `THRESHOLD_MAX` / `THRESHOLD_DEFAULT` in `app.py`. The default is measured on the shipped corpus; see [Why the default is 0.53](../README.md#why-the-default-is-053). |
+| `threshold` | number | no | `0.1 ≤ threshold ≤ 0.9` by default | Default `0.53`. Minimum similarity; higher is stricter. The accepted range and default are deployment settings: `THRESHOLD_MIN` / `THRESHOLD_MAX` / `THRESHOLD_DEFAULT` (see [Configuration](../README.md#configuration)). The default is measured on the shipped corpus; see [Why the default is 0.53](../README.md#why-the-default-is-053). |
 | `max_threshold` | number | no | same as `threshold` | **Deprecated alias** kept for the existing frontend. Same minimum-similarity scale, not a distance. If both are sent, `threshold` wins. |
 
 There is no `offset`, `page`, or `limit` parameter.
@@ -353,7 +353,7 @@ Use `/health` before a demo; use `/search` to prove the LLM actually responds.
 
 ## CORS
 
-Prototype configuration (`app.py:119-125`): all origins, all methods, all
+Prototype configuration: all origins (`CORS_ALLOW_ORIGINS=*`), all methods, all
 headers, credentials disabled.
 
 ```
@@ -361,8 +361,9 @@ access-control-allow-origin: *
 ```
 
 This is deliberate — the API sets no cookies and uses no credentials, and the
-frontend may run on any port. Before publishing the service, replace
-`allow_origins` with the real frontend origin.
+frontend may run on any port. Before publishing the service, set
+`CORS_ALLOW_ORIGINS` to the real frontend origin(s), comma-separated, e.g.
+`CORS_ALLOW_ORIGINS=https://aisen.example.com`.
 
 ---
 
@@ -370,10 +371,10 @@ frontend may run on any port. Before publishing the service, replace
 
 | Limit | Value | Source |
 |---|---|---|
-| Candidates fetched per query | 100 | `N_RESULTS = 100` |
+| Candidates fetched per query | 100 | `SEARCH_N_RESULTS` |
 | Results returned | up to 100 | no pagination |
-| Results sent to the LLM | 5 | `SUMMARY_TOP_K = 5` |
-| LLM wait before fallback | 15 s | `LLM_TIMEOUT_SECONDS = 15` |
+| Results sent to the LLM | 5 | `SUMMARY_TOP_K` |
+| LLM wait before fallback | 15 s | `LLM_TIMEOUT_SECONDS` |
 | `query` minimum length | 1 character after trim | `SearchRequest` |
 | `threshold` range | 0.1 - 0.9, default 0.53 | `THRESHOLD_MIN/MAX/DEFAULT` |
 | Cold start (first boot) | minutes | embedding-model download |

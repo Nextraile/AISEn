@@ -21,8 +21,9 @@ a plain Vite app, so the rules below apply as-is.
 
 Each service assumes its own directory as the working directory.
 
-Backend — `DB_PATH = "./data/vector_db"`, `pytest.ini` (`pythonpath = .`),
-and `--env-file .env` are all relative to `backend/`:
+Backend — `settings.py` (generated: `./data/vector_db`, `data/documents.json`),
+`pytest.ini` (`pythonpath = .`), and `--env-file .env` are all relative to
+`backend/`:
 
 ```bash
 cd backend
@@ -49,11 +50,13 @@ because there is no root `package.json`.
 
 ## Conventions
 
-- Do not commit secrets or generated data. `backend/.env`,
-  `backend/data/vector_db/` and `backend/data/documents.json` are
-  git-ignored; `backend/.env.example` documents the required variables.
-- `frontend/.env` is committed on purpose: it holds a single non-secret value,
-  `VITE_API_BASE_URL`. Everything secret belongs in the backend.
+- Do not commit secrets or generated data. `backend/.env` and `backend/data/`
+  are git-ignored; `backend/.env.example` documents every variable and
+  `frontend/.env.example` documents the frontend's.
+- `frontend/.env` is committed on purpose. It holds no secrets — API base URL,
+  request timeout, default threshold, page size, debounce delay, and the three
+  relevance presets — and `.env.example` documents each one. Everything secret
+  belongs in the backend. Vite inlines these values at build time.
 - Commit `frontend/package-lock.json`. Never commit `frontend/node_modules/` or
   `frontend/dist/`; both are git-ignored.
 - Keep each service self-contained in its own directory. Root-level files are for

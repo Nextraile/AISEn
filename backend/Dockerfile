@@ -15,7 +15,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py settings.py ./
+
+# `ingest.py` is not copied: the image only serves. To (re)build the index, run
+# `python ingest.py --all` on the host — compose bind-mounts ./data/vector_db.
 
 RUN mkdir -p /app/data/vector_db /model-cache \
     && useradd --create-home --uid ${APP_UID} app \
