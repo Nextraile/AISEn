@@ -1,4 +1,4 @@
-name: undip-search
+name: aisen
 
 services:
   aisen-api:
@@ -10,7 +10,7 @@ services:
         # PowerShell: $env:APP_UID=1000; docker compose up
 
         APP_UID: ${APP_UID:-10001}
-    container_name: undip-search-aisen-api
+    container_name: aisen-api
     env_file: .env
     ports:
       - "${API_PORT:-8000}:8000"
