@@ -1,30 +1,31 @@
 # Network Layer (`src/app`)
 
-Lapisan jaringan untuk AISEn. **Dikelola developer network** — developer UI cukup
-mengonsumsi hook, tanpa menyentuh `fetch`, URL, header, maupun error handling.
+The network layer for AISEn. **Owned by the network developer** — UI developers
+just consume hooks and never touch `fetch`, URLs, headers, or error handling.
 
-> Status kontrak API: endpoint `POST /search` (FastAPI + ChromaDB) sudah
-> berdasarkan dokumentasi resmi. Endpoint lain masih **sementara** — menunggu
-> dokumentasi backend; perbarui hanya `src/features/<fitur>/types/*.ts`.
+> API contract status: `POST /search` (FastAPI + ChromaDB) follows the official
+> documentation. Other endpoints are still **provisional** — they are waiting on
+> backend documentation; update only
+> `src/features/<feature>/types/*.ts` when that lands.
 
-## Struktur
+## Structure
 
 ```
 src/app/
 ├── api/
-│   ├── types.ts         # Tipe dasar (RequestOptions, interceptor, config)
-│   ├── body.ts          # Serialisasi body (JSON vs FormData)
-│   ├── errors.ts        # ApiError + pesan yang jelas untuk user
+│   ├── types.ts         # Base types (RequestOptions, interceptors, config)
+│   ├── body.ts          # Body serialization (JSON vs FormData)
+│   ├── errors.ts        # ApiError + messages safe to show users
 │   ├── state.ts         # Discriminated union state + reducer
-│   ├── interceptors.ts  # Interceptor bawaan (header, auth, envelope, logger)
-│   ├── client.ts        # Base API client (fetch, timeout, abort, normalisasi error)
-│   └── index.ts         # ← import publik ada di sini
+│   ├── interceptors.ts  # Built-in interceptors (headers, auth, envelope, logger)
+│   ├── client.ts        # Base API client (fetch, timeout, abort, error normalization)
+│   └── index.ts         # ← the public imports live here
 └── hooks/
-    ├── useRequestState.ts  # Hook generik state request
+    ├── useRequestState.ts  # Generic request-state hook
     └── index.ts
 ```
 
-## Cara developer UI memakai hook
+## How a UI developer uses a hook
 
 ```tsx
 const { state, refetch, reset } = useSearchDocuments(query);
@@ -32,56 +33,57 @@ const { state, refetch, reset } = useSearchDocuments(query);
 switch (state.status) {
   case "idle":    return null;
   case "loading": return <Spinner />;
-  case "error":   return <p>{state.error.message}</p>; // pesan sudah jelas & aman
+  case "error":   return <p>{state.error.message}</p>; // already clear and safe
   case "success": return <List items={state.data} />;
 }
 ```
 
-- `state.error.message` **selalu** aman ditampilkan ke pengguna.
-- `state.error.detail` / `.status` / `.code` hanya untuk debugging.
-- `refetch()` untuk tombol "coba lagi", `reset()` untuk kembali ke `idle`.
+- `state.error.message` is **always** safe to show the user.
+- `state.error.detail` / `.status` / `.code` are for debugging only.
+- `refetch()` backs a "try again" button; `reset()` returns to `idle`.
 
-## Cara developer network menambah endpoint
+## How a network developer adds an endpoint
 
 ```ts
-// 1. Definisikan kontrak di features/<fitur>/types/*.ts
-export interface ProfileResponse { nama: string; }
+// 1. Define the contract in features/<feature>/types/*.ts
+export interface ProfileResponse { name: string; }
 
-// 2. Buat consumer di features/<fitur>/services/*Api.ts
+// 2. Add a consumer in features/<feature>/services/*Api.ts
 import { apiClient } from "../../../app/api";
 
 export const getProfile = () => apiClient.get<ProfileResponse>("/api/v1/profile");
 ```
 
-`apiClient` sudah menangani: baseUrl (`VITE_API_BASE_URL`), header JSON,
-token `Authorization` (dari `localStorage["access_token"]`), timeout 15 detik,
-query parameter, unwrap envelope `{ data, message, code }`, dan normalisasi
-semua error menjadi `ApiError` ber-pesan jelas.
+`apiClient` already handles: the base URL (`VITE_API_BASE_URL`), JSON headers, an
+`Authorization` token (from `localStorage["access_token"]`), a 15-second timeout,
+query parameters, envelope unwrapping (`{ data, message, code }`), and
+normalizing every failure into an `ApiError` with a clear message.
 
-## Jenis error (`ApiErrorKind`)
+## Error kinds (`ApiErrorKind`)
 
-| kind | arti |
+| kind | meaning |
 |---|---|
-| `network` | Gagal terhubung (offline/DNS/CORS) |
-| `timeout` | Server tidak merespons dalam 15 detik |
-| `abort` | Dibatalkan (bukan kegagalan; hook mengabaikannya) |
+| `network` | Could not connect (offline/DNS/CORS) |
+| `timeout` | Server did not respond within 15 seconds |
+| `abort` | Cancelled (not a failure; hooks ignore it) |
 | `unauthorized` / `forbidden` | 401 / 403 |
 | `notFound` | 404 |
-| `validation` | 400 / 422 (memakai pesan server bila ada) |
+| `validation` | 400 / 422 (uses the server message when present) |
 | `server` | 5xx |
-| `client` | 4xx lainnya |
-| `parse` | Respons bukan JSON yang valid |
-| `unknown` | Lainnya |
+| `client` | Any other 4xx |
+| `parse` | Response was not valid JSON |
+| `unknown` | Anything else |
 
-## Interceptor
+## Interceptors
 
-Urutan: request → `jsonHeaders` → `auth` → custom; response → `unwrapEnvelope` → custom.
+Order: request → `jsonHeaders` → `auth` → custom; response →
+`unwrapEnvelope` → custom.
 
 ```ts
 const log = createLoggingInterceptor();
 const api = createApiClient({
   requestInterceptors: [log.request],
   responseInterceptors: [log.response],
-  enableEnvelopeUnwrap: true, // matikan jika backend tidak pakai envelope
+  enableEnvelopeUnwrap: true, // turn off if the backend does not use an envelope
 });
 ```
