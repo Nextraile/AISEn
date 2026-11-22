@@ -1,0 +1,10 @@
+# Normalize line endings independently of the client.
+#
+# The repo is edited from both WSL and Windows. Git for Windows sets
+# core.autocrlf=true system-wide, WSL does not, so the two clients disagreed
+# about whether files were modified. Declaring the rule here makes both write
+# LF to the repository and to the working tree, whatever their global config.
+#
+# LF also matters for the containers: a shell script with CRLF line endings
+# fails with "bad interpreter: no such file or directory".
+* text=auto eol=lf
