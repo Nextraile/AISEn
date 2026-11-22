@@ -1,15 +1,6 @@
 #!/bin/sh
 # Startup guard: prove the bind-mounted ChromaDB directory is writable by the
-# UID this container runs as, and explain the fix in plain words if it is not.
-#
-# ChromaDB's SQLite backend needs write access just to open the database. When
-# the host directory is owned by a different UID than APP_UID, startup dies
-# inside the Rust bindings with:
-#
-#   chromadb.errors.InternalError: ... (code: 8) attempt to write a readonly database
-#
-# which never mentions UIDs or Docker. This check runs first so the common
-# misconfiguration is a one-line read instead of a stack trace.
+# UID this container runs as, and explain the fix in plain words if it is not
 set -eu
 
 DB_DIR=${CHROMA_DB_PATH:-/app/data/vector_db}
