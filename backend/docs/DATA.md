@@ -101,6 +101,14 @@ a similarity. `/health` reports the metric so this is checkable.
    `--target N` to change the record count, and `--query "..."` for a
    similarity check against the fresh index.
 
+   Without Python on the host, the same script ships in the `tools` Compose
+   profile (the serving image does not contain it):
+
+   ```bash
+   docker compose --profile tools run --rm tools ingest.py --all
+   docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
+   ```
+
    Every setting has an environment default (see `../.env.example`), so a
    deployment can run the same command with `INGEST_TARGET`, `OAI_ENDPOINT`,
    `INGEST_JSON_PATH`, `CHROMA_DB_PATH` and `CHROMA_COLLECTION` set instead. CLI
@@ -147,4 +155,4 @@ covers harvesting as well as serving.
 | Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python ingest.py --index` |
 | Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts it |
 | Container exits with `attempt to write a readonly database` | The bind-mounted DB is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; `chmod -R a+rwX data/vector_db` is a stopgap |
-| `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | `docker compose down -v`, then rebuild |
+| `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | Give it to the new user and keep the cached model: `docker run --rm -v aisen_model_cache:/model-cache busybox chown -R <uid>:<uid> /model-cache`. `docker compose down -v` also works but redownloads ~470 MB |

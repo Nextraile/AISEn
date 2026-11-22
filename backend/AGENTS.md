@@ -6,7 +6,7 @@ One small service: FastAPI semantic search over harvested Universitas Diponegoro
 
 - `app.py` — the service (also what the Dockerfile serves: `CMD uvicorn app:app`): async endpoint, embedding/query offloaded via `run_in_threadpool`, explicit `RuntimeError` at startup when the Chroma collection is missing, Gemini summary with citations and fallback to list-only.
 - `settings.py` — the single source of configuration: a frozen `Settings` dataclass built by `from_env()`, with `validate()` rejecting impossible combinations at import time. Defaults equal the previously hardcoded constants. `GEMINI_API_KEY` / `GEMINI_MODEL` are intentionally *not* part of it — they are optional and read per call so tests can set and clear them.
-- `ingest.py` — the only data ingestion path: OAI-PMH harvest → `data/documents.json` → embeddings → Chroma. Not run by the app, not in the Docker image (`Dockerfile` copies only `app.py`).
+- `ingest.py` — the only data ingestion path: OAI-PMH harvest → `data/documents.json` → embeddings → Chroma. Not run by the app and not in the serving image: the `tools` Compose profile rebuilds the same Dockerfile with `INGEST=1` to include it, so ingestion reuses the cached torch layer instead of downloading it twice.
 
 ## Data prerequisites (the #1 startup failure)
 
@@ -28,6 +28,8 @@ pip install -r requirements-dev.txt && pytest   # tests (no model download neede
 cp .env.example .env                       # then fill GEMINI_API_KEY and GEMINI_MODEL
 docker compose up --build                  # serves app.py on :8000 (needs .env)
 APP_UID=$(id -u) docker compose up -d --build --wait   # same, writable bind mount, waits for health
+docker compose --profile tools run --rm tools ingest.py --all      # harvest + embed, no local Python
+docker compose --profile tools run --rm tools ingest.py --query "..."  # same ranking as POST /search
 ```
 
 - Run uvicorn from `backend/`: `DB_PATH = "./data/vector_db"` is relative to the CWD.

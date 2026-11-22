@@ -26,10 +26,32 @@ when something does not cooperate. Written for the prototype as it exists today.
   ```bash
   APP_UID=$(id -u) docker compose up -d --build --wait
   ```
-  Without `APP_UID` the container runs as UID 10001 and startup fails with
-  `attempt to write a readonly database`. After changing it, run
-  `docker compose down -v` once — the old `model_cache` volume belongs to the
-  previous UID.
+  Without `APP_UID` the container runs as UID 10001 and the entrypoint stops
+  with the owner UID and the container UID. After changing it, hand the model
+  cache to the new user instead of redownloading it:
+  ```bash
+  docker compose down
+  docker run --rm -v aisen_model_cache:/model-cache busybox chown -R "$(id -u):$(id -g)" /model-cache
+  ```
+  (`docker compose down -v` also unblocks it, but pays the ~470 MB download.)
+- [ ] If the audience sees the UI rather than Swagger, start it from `frontend/`
+  and confirm the nginx proxy reaches the API:
+  ```bash
+  cd ../frontend && docker compose up -d --build --wait   # http://localhost:3000
+  curl -X POST http://localhost:3000/api/search \
+    -H "Content-Type: application/json" \
+    -d '{"query":"analisis kualitas air sungai"}'
+  ```
+  The UI needs no CORS setup: the browser calls `/api` on its own origin and
+  nginx proxies it to `aisen-api:8000` on the shared `aisen_default` network.
+- [ ] Sanity-check the relevance gate (there is no separate calibration script):
+  ```bash
+  python ingest.py --query "analisis kualitas air sungai"
+  ```
+  Without Python on the host, the `tools` profile runs the same script:
+  ```bash
+  docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
+  ```
 - [ ] Check all three health facts in one call:
   ```bash
   curl http://localhost:8000/health
@@ -50,7 +72,8 @@ when something does not cooperate. Written for the prototype as it exists today.
   path works.
 - [ ] Take a screenshot of a successful `full` response.
 - [ ] Decide what the audience sees: Swagger UI at `/docs` (zero setup, shows the
-  whole contract, good for a technical audience) or the frontend.
+  whole contract, good for a technical audience) or the UI at
+  `http://localhost:3000` (what the project is actually about).
 
 ## On the day
 
@@ -59,7 +82,11 @@ when something does not cooperate. Written for the prototype as it exists today.
   uvicorn app:app --port 8000 --env-file .env
   ```
   Prefer this over `docker compose` — fewer moving parts and the model cache is
-  already warm.
+  already warm. If you are showing the UI, start it too, in another terminal:
+  ```bash
+  cd frontend && docker compose up -d --build --wait
+  ```
+  then open `http://localhost:3000`.
 - [ ] Warm up with one request before anyone is watching (first request loads
   nothing new, but it shakes out any environment surprise):
   ```bash

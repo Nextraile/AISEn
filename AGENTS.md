@@ -7,7 +7,9 @@ research published at Universitas Diponegoro. Two self-contained services:
 
 ```
 backend/          FastAPI + ChromaDB: embedding, search, Gemini summary, ingestion
+                  Dockerfile, docker-compose.yml (project `aisen`, container `aisen-api`)
 frontend/         React 19 + TypeScript + Vite UI (Tailwind 4)
+                  Dockerfile, nginx.conf.template, docker-compose.yml (container `aisen-web`)
 README.md         monorepo overview and quick start
 AGENTS.md         this file (monorepo-level rules)
 ```
@@ -44,9 +46,25 @@ npm run build      # tsc -b && vite build
 npm run lint
 ```
 
+Docker — the same Compose project (`aisen`) for both, so `aisen-web` reaches
+`aisen-api` by name on `aisen_default`:
+
+```bash
+cd backend
+APP_UID=$(id -u) docker compose --profile tools run --rm tools ingest.py --all
+APP_UID=$(id -u) docker compose up -d --build --wait      # API on :8000
+
+cd ../frontend
+docker compose up -d --build --wait                       # UI on :3000
+```
+
+`ingest.py` is only in the `tools`-profile image (`INGEST=1`); the serving image
+does not contain it.
+
 Backend commands fail from the monorepo root: `app.py` will not be
 importable and the vector DB will not be found. npm commands fail from the root
-because there is no root `package.json`.
+because there is no root `package.json`, and fail from the UNC path
+`\\wsl.localhost\...` — run them inside WSL, or use Docker.
 
 ## Conventions
 
@@ -57,6 +75,17 @@ because there is no root `package.json`.
   request timeout, default threshold, page size, debounce delay, and the three
   relevance presets — and `.env.example` documents each one. Everything secret
   belongs in the backend. Vite inlines these values at build time.
+- Docker builds ignore `frontend/.env`: `frontend/docker-compose.yml` passes the
+  same names as build args, and `.dockerignore` keeps `.env` out of the context
+  so a dev value cannot be baked into the image. Changing any `VITE_*` value
+  needs a rebuild; `API_UPSTREAM` is the one runtime variable (read by nginx, not
+  the bundle).
+- Line endings are LF, enforced by `.gitattributes` (`* text=auto eol=lf`).
+  Git for Windows sets `core.autocrlf=true` system-wide while WSL git does not,
+  so without that file the two clients disagree and WSL reports the whole tree as
+  modified. Do not commit those phantom diffs, do not delete the file, and do not
+  reintroduce CRLF: a shell script with CRLF fails in a container with
+  `bad interpreter`.
 - Commit `frontend/package-lock.json`. Never commit `frontend/node_modules/` or
   `frontend/dist/`; both are git-ignored.
 - Keep each service self-contained in its own directory. Root-level files are for

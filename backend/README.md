@@ -87,10 +87,20 @@ cp .env.example .env   # docker compose fails without this file
 APP_UID=$(id -u) docker compose up -d --build --wait
 ```
 
+This builds and serves `app.py` on <http://localhost:8000>, and returns only once
+the container is healthy. Override the published port with `API_PORT` (Compose
+maps `${API_PORT:-8000}:8000`) and the first-start grace period with
+`HEALTH_START_PERIOD` (default `120s`).
+
+The Compose project is `aisen`, so the container is `aisen-api`, the network
+`aisen_default`, and the model cache volume `aisen_model_cache`. Those names are
+deliberately shared with `frontend/docker-compose.yml`, which proxies `/api` to
+`http://aisen-api:8000` — so the UI reaches this container by name, without CORS
+and without publishing the API port to the browser's machine.
+
 `APP_UID` makes the container run as your own user, so it can write the
 bind-mounted `./data/vector_db`. On PowerShell:
-`$env:APP_UID=1000; docker compose up -d --build --wait`. The command returns
-only once the container is healthy.
+`$env:APP_UID=1000; docker compose up -d --build --wait`.
 
 If the UID does not match, `docker-entrypoint.sh` stops the container before
 ChromaDB is opened and prints the owner UID, the container UID, and the exact
@@ -98,12 +108,22 @@ command to fix it — instead of the raw `attempt to write a readonly database`
 traceback. The default is `10001`, so a plain `docker compose up` always starts
 the guard path rather than depending on the host UID.
 
-The embedding model is cached in the `model_cache` volume, so restarts do not
-re-download it. The volume is prefixed with the Compose project name
-(`aisen_model_cache`), so **renaming the project starts from an empty cache** and
-redownloads the ~470 MB model once. After changing `APP_UID`, run
-`docker compose down -v` once:
-the old volume belongs to the previous UID.
+The collection has to exist before the server starts: build it on the host with
+`python ingest.py --all`, or use the Docker-only path below.
+
+The embedding model is cached in the `model_cache` volume, prefixed with the
+Compose project name (`aisen_model_cache`). Renaming the project starts from an
+empty cache and redownloads the ~470 MB model once. Changing `APP_UID` leaves
+that volume owned by the previous user; either hand it to the new one, which
+keeps the download —
+
+```bash
+docker compose down
+docker run --rm -v aisen_model_cache:/model-cache busybox chown -R "$(id -u):$(id -g)" /model-cache
+```
+
+— or delete it with `docker volume rm aisen_model_cache` (equivalently
+`docker compose down -v`) and pay the download again.
 
 ### Ingesting without installing Python on the host
 
@@ -223,8 +243,9 @@ docs/API.md                API reference
 docs/DATA.md               ingestion pipeline and metadata contract
 docs/DEMO.md               pre-meeting checklist and demo runbook
 .env.example               full configuration inventory
-Dockerfile                 CPU-only image, non-root user
-docker-compose.yml         single service + model cache volume
+Dockerfile                 CPU-only image, non-root user, INGEST arg for the tools image
+docker-entrypoint.sh       UID/writability guard, checked before the server starts
+docker-compose.yml         aisen-api, the `tools` ingest profile, and the model cache volume
 ```
 
 ## Troubleshooting

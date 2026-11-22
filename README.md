@@ -25,12 +25,45 @@ directory — paths such as `DB_PATH = "./data/vector_db"` and
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Python | 3.11+ | backend |
-| Node.js | 20+ | frontend |
-| Docker | any recent | optional, backend only |
+| Docker | recent, with Compose v2 | **both services** — the recommended path |
+| Python | 3.11+ | backend, without Docker |
+| Node.js | 22+ (20+ also works) | frontend, without Docker |
 | Gemini API key | — | optional; without it the API returns results without a summary |
 
-## Quick start
+## Quick start (Docker)
+
+Each service has its own `docker-compose.yml` and its own working directory, and
+both declare the same Compose project (`aisen`), so they share one network.
+
+```powershell
+# 1. Build the index — first run only: harvests and embeds 1,000 records
+cd backend
+$env:APP_UID='1000'                       # your uid (`id -u` in WSL); persists in this window
+docker compose --profile tools run --rm tools ingest.py --all
+
+# 2. API -> http://localhost:8000  (returns once healthy)
+docker compose up -d --build --wait
+curl.exe -s http://localhost:8000/health
+
+# 3. UI -> http://localhost:3000
+cd ..\frontend
+docker compose up -d --build --wait
+```
+
+`APP_UID` lets the container write the bind-mounted `./data/vector_db`. On
+Linux/WSL prefix the command instead: `APP_UID=$(id -u) docker compose up -d
+--build --wait`. If it does not match, `docker-entrypoint.sh` stops the container
+and prints the owner UID and the container UID, rather than a SQLite traceback.
+
+The browser never calls the API cross-origin: it requests `/api/...` from the
+same origin and nginx proxies that to `http://aisen-api:8000` over the shared
+`aisen_default` network. No CORS, and the API port need not be reachable from
+the machine showing the UI.
+
+Stop both with `docker compose down` in `frontend/` and `backend/`. Do not add
+`-v` in `backend/` unless you want to redownload the ~470 MB embedding model.
+
+## Quick start (without Docker)
 
 Two terminals, backend first.
 
@@ -63,6 +96,9 @@ so changes need a rebuild. Point the base URL at another host if the API runs
 elsewhere. CORS is open on the backend by default, so the Vite dev server works
 as-is.
 
+npm scripts fail from a UNC path (`\\wsl.localhost\...`): run them inside WSL,
+or use the Docker path above.
+
 ## How the two halves meet
 
 `POST /search` is the only endpoint the UI uses. The frontend sends
@@ -84,6 +120,7 @@ guidance instead of a list.
 | [backend/docs/DATA.md](backend/docs/DATA.md) | OAI-PMH harvest, embedding, metadata contract, rebuild steps |
 | [backend/docs/DEMO.md](backend/docs/DEMO.md) | pre-demo checklist and talking points |
 | [backend/AGENTS.md](backend/AGENTS.md) | backend internals and invariants |
+| [frontend/README.md](frontend/README.md) | UI structure, configuration, the nginx container |
 | [frontend/src/app/api/README.md](frontend/src/app/api/README.md) | the frontend's HTTP client wrapper |
 | [backend/.env.example](backend/.env.example) | every backend setting, with defaults |
 | [frontend/.env.example](frontend/.env.example) | every frontend setting, with defaults |
@@ -91,5 +128,16 @@ guidance instead of a list.
 ## Data is not in the repository
 
 `backend/data/vector_db/` and `backend/data/documents.json` are
-git-ignored. A fresh clone has no index: run `python ingest.py --all` in
-`backend/` to harvest the Undip OAI-PMH feed and build the collection.
+git-ignored. A fresh clone has no index. Build it with either path:
+
+```bash
+# local
+cd backend && python ingest.py --all
+
+# Docker (no Python on the host): ingest.py ships only in the `tools` profile
+cd backend && docker compose --profile tools run --rm tools ingest.py --all
+```
+
+Both harvest the Undip OAI-PMH feed, embed the records, and create the
+collection. `ingest.py` deletes and recreates the collection, so re-running is
+a full rebuild, not an update.
