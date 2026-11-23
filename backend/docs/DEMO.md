@@ -137,15 +137,21 @@ Answers that are honest and short. Do not overclaim.
 - **Why do you truncate abstracts?** The model handles 128 tokens, so vectors
   represent the title plus the start of the abstract. A production version would
   chunk or summarize first.
-- **Why is the threshold 0.53?** Measured on this corpus: relevant phrases put
-  the best hit at 0.58–0.73, while off-topic queries top out at 0.46. `0.53` is
-  the midpoint of that gap, so it keeps real matches and rejects noise. You can
-  reproduce the scores with `python ingest.py --query "<phrase>"`.
-- **Why did "stunting" return nothing?** One word is too vague: it scores 0.47,
-  just under the bar. Ask for `faktor risiko stunting pada balita` (0.65). An
+- **Why is the threshold 0.60?** Measured on the full 47,913-record corpus:
+  relevant phrases put the best hit at 0.74–0.84, while off-topic queries top
+  out at 0.559. `0.60` sits in that gap, so it keeps real matches and rejects
+  noise. You can reproduce the scores with
+  `python ingest.py --query "<phrase>" --min-similarity 0`.
+- **Why did "stunting" return nothing?** One word is too vague: it scores 0.53,
+  under the bar. Ask for `faktor risiko stunting pada balita` (0.74). An
   empty result is the intended behaviour when the corpus has nothing clear —
   lower the slider only if you accept noisier matches. The `arahan` field
   reports both the threshold and the best score found.
+- **Why did the default change from 0.53?** It was measured on a 1,000-record
+  sample. On the full corpus that number let food-adjacent noise through — a
+  *mochi* thesis scored 0.538 for `resep rendang padang` — while a legitimate
+  one-word query sat just below it. Both bands rise with corpus size; the
+  constant had to follow.
 - **What if Gemini fails?** The response degrades to `list_only` with a reason in
   `ringkasan_error`; searching never depends on the LLM. There is no automatic
   retry — the user retries.

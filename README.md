@@ -119,7 +119,7 @@ guidance instead of a list.
 
 | Document | Covers |
 |---|---|
-| [backend/README.md](backend/README.md) | architecture, configuration, why the default threshold is 0.53, known limitations |
+| [backend/README.md](backend/README.md) | architecture, configuration, why the default threshold is 0.60, known limitations |
 | [backend/docs/API.md](backend/docs/API.md) | request/response contract, all three statuses, errors |
 | [backend/docs/DATA.md](backend/docs/DATA.md) | OAI-PMH harvest, embedding, metadata contract, rebuild steps |
 | [backend/docs/DEMO.md](backend/docs/DEMO.md) | pre-demo checklist and talking points |

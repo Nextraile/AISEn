@@ -63,7 +63,7 @@ verbatim throughout this document:
 | Field | Type | Required | Constraints | Notes |
 |---|---|---|---|---|
 | `query` | string | yes | at least 1 character **after** trimming | Leading/trailing whitespace is stripped, so `"   "` is rejected. No maximum length. Indonesian and English both work. |
-| `threshold` | number | no | `0.1 ≤ threshold ≤ 0.9` by default | Default `0.53`. Minimum similarity; higher is stricter. The accepted range and default are deployment settings: `THRESHOLD_MIN` / `THRESHOLD_MAX` / `THRESHOLD_DEFAULT` (see [Configuration](../README.md#configuration)). The default is measured on the shipped corpus; see [Why the default is 0.53](../README.md#why-the-default-is-053). |
+| `threshold` | number | no | `0.1 ≤ threshold ≤ 0.9` by default | Default `0.60`. Minimum similarity; higher is stricter. The accepted range and default are deployment settings: `THRESHOLD_MIN` / `THRESHOLD_MAX` / `THRESHOLD_DEFAULT` (see [Configuration](../README.md#configuration)). The default is measured on the shipped corpus; see [Why the default is 0.60](../README.md#why-the-default-is-060). |
 | `max_threshold` | number | no | same as `threshold` | **Deprecated alias** kept for the existing frontend. Same minimum-similarity scale, not a distance. If both are sent, `threshold` wins. |
 
 There is no `offset`, `page`, or `limit` parameter.
@@ -71,7 +71,7 @@ There is no `offset`, `page`, or `limit` parameter.
 ```bash
 curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "faktor risiko stunting balita", "threshold": 0.53}'
+  -d '{"query": "faktor risiko stunting balita", "threshold": 0.60}'
 ```
 
 ### Response body
@@ -129,8 +129,8 @@ summary did not.
 ```json
 {
   "query": "faktor risiko stunting balita",
-  "threshold": 0.53,
-  "max_threshold": 0.53,
+  "threshold": 0.60,
+  "max_threshold": 0.60,
   "count": 2,
   "results": [
     {
@@ -169,8 +169,8 @@ Any `[n]` outside that range is stripped from the summary before it is returned.
 ```json
 {
   "query": "stunting",
-  "threshold": 0.53,
-  "max_threshold": 0.53,
+  "threshold": 0.60,
+  "max_threshold": 0.60,
   "count": 2,
   "results": [
     {
@@ -219,8 +219,8 @@ There is no automatic retry. The client decides whether to retry.
 ```json
 {
   "query": "stunting",
-  "threshold": 0.53,
-  "max_threshold": 0.53,
+  "threshold": 0.60,
+  "max_threshold": 0.60,
   "count": 0,
   "results": [],
   "status": "no_results",
@@ -228,7 +228,7 @@ There is no automatic retry. The client decides whether to retry.
   "ringkasan_error": null,
   "skor_tertinggi": 0.4716,
   "arahan": [
-    "Tidak ada jurnal yang mencapai ambang kemiripan 0.53.",
+    "Tidak ada jurnal yang mencapai ambang kemiripan 0.60.",
     "Kemiripan tertinggi yang ditemukan: 0.47.",
     "Coba kata kunci yang lebih spesifik.",
     "Perluas topik pencarian."
@@ -247,8 +247,8 @@ when the corpus has nothing relevant.
 ```json
 {
   "query": "stunting",
-  "threshold": 0.53,
-  "max_threshold": 0.53,
+  "threshold": 0.60,
+  "max_threshold": 0.60,
   "count": 0,
   "results": [],
   "status": "no_results",
@@ -426,7 +426,7 @@ frontend may run on any port. Before publishing the service, set
 | Results sent to the LLM | 5 | `SUMMARY_TOP_K` |
 | LLM wait before fallback | 15 s | `LLM_TIMEOUT_SECONDS` |
 | `query` minimum length | 1 character after trim | `SearchRequest` |
-| `threshold` range | 0.1 - 0.9, default 0.53 | `THRESHOLD_MIN/MAX/DEFAULT` |
+| `threshold` range | 0.1 - 0.9, default 0.60 | `THRESHOLD_MIN/MAX/DEFAULT` |
 | Cold start (first boot) | minutes | embedding-model download |
 | Warm start | seconds | model + DB load |
 | Typical search latency | dominated by the LLM; retrieval is tens of ms | — |
@@ -450,7 +450,7 @@ Useful for frontend clients written against an earlier build.
 | Readiness | — | `/ready` returns `503` with `problems` when the index is empty, non-cosine, mismatched, or the last ingest failed |
 | Metadata handling | direct indexing, `KeyError` possible | missing fields become `""` |
 | LLM timeout | 20 s → 8 s | 15 s (measured: real calls run 1–7 s with a tail past 8 s) |
-| Default threshold | `0.5` (a guess) | `0.53` (measured midpoint: noise ≤ 0.46, relevant phrases ≥ 0.58) |
+| Default threshold | `0.5` (a guess) | `0.53`, then `0.60` once measured on the full 47,913-record corpus (noise ≤ 0.559, relevant phrases ≥ 0.74) |
 | `no_results` guidance | "Kemiripan tertinggi …; turunkan threshold di bawah nilai itu." | reports the threshold and best score, no instruction to lower it — an empty result is valid |
 | Ingestion | notebook run by hand | `python ingest.py --all` (same harvest, JSON, and Chroma build) |
 

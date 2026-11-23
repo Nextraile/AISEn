@@ -185,15 +185,16 @@ def test_no_result_includes_guidance():
 
 
 def test_default_threshold_filters_at_measured_boundary():
-    # distance 0.45 -> similarity 0.55: passes the calibrated default.
-    body = make_client([0.45]).post("/search", json={"query": "x"}).json()
+    # distance 0.35 -> similarity 0.65: passes the calibrated default (0.60).
+    body = make_client([0.35]).post("/search", json={"query": "x"}).json()
     assert body["threshold"] == app.THRESHOLD_DEFAULT
     assert body["count"] == 1
 
 
 def test_default_threshold_rejects_score_below_it():
-    # distance 0.5 -> similarity 0.5: below the default, so the result is empty.
-    body = make_client([0.5]).post("/search", json={"query": "x"}).json()
+    # distance 0.45 -> similarity 0.55: below the 0.60 default, so the result is
+    # empty. This is the measured boundary: off-topic noise tops out at 0.559.
+    body = make_client([0.45]).post("/search", json={"query": "x"}).json()
     assert body["threshold"] == app.THRESHOLD_DEFAULT
     assert body["status"] == "no_results"
 

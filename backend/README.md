@@ -74,7 +74,7 @@ curl http://localhost:8000/health
 
 curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "faktor risiko stunting balita", "threshold": 0.53}'
+  -d '{"query": "faktor risiko stunting balita", "threshold": 0.60}'
 ```
 
 Interactive docs are served at `http://localhost:8000/docs`; the machine-readable
@@ -159,7 +159,7 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `CHROMA_COLLECTION` | `undip_research_search` | Collection name |
 | `SEARCH_N_RESULTS` | `100` | Candidates fetched per query; also the maximum result count |
 | `THRESHOLD_MIN` / `THRESHOLD_MAX` | `0.1` / `0.9` | Accepted range for the request's `threshold` |
-| `THRESHOLD_DEFAULT` | `0.53` | Applied when a request omits the threshold |
+| `THRESHOLD_DEFAULT` | `0.60` | Applied when a request omits the threshold |
 | `SUMMARY_TOP_K` | `5` | Results handed to the LLM; must be ≤ `SEARCH_N_RESULTS` |
 | `LLM_TIMEOUT_SECONDS` | `15` | Gemini budget before falling back to `list_only` |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed origins |
@@ -207,36 +207,53 @@ The frontend still sends the older field name `max_threshold`. It is accepted as
 an alias for `threshold` (same **minimum similarity** scale) and mirrored in the
 response, so both names always agree.
 
-## Why the default is 0.53
+## Why the default is 0.60
 
 `threshold` is a **minimum similarity**, not a distance: higher means stricter.
 It is a relevance gate, not a knob for "make sure something comes back". An
 empty result is a valid answer.
 
-The default (`0.53`, `THRESHOLD_DEFAULT` in `app.py`) was measured on the 1,000-record
-collection, not guessed. The method: score a set of phrasal queries that should
-match and a set of off-topic queries that should not, then take the midpoint
-**only if the two bands separate**. On the shipped corpus they do.
+The default (`0.60`, `THRESHOLD_DEFAULT` in `settings.py`) was measured on the
+**full 47,913-record collection**, not guessed and not inherited from the old
+1,000-record sample. The method: score phrasal queries that should match and
+off-topic queries that should not, then place the threshold in the gap **only if
+the two bands separate**.
 
-Measured on the 1,000-record collection with the real model:
+Measured on all 47,913 records with the real model:
 
-| Query shape | Best score |
-|---|---|
-| full phrase (`pengaruh media sosial terhadap perilaku remaja`) | 0.73 |
-| full phrase (`analisis kualitas air sungai`) | 0.66 |
-| shorter phrase (`energi terbarukan`) | 0.58 |
-| one word (`stunting`) | 0.47 |
-| off-topic (`resep rendang padang`) | 0.46 |
+| Query | Best score | 100th score |
+|---|---|---|
+| `coral reef ecosystem` | 0.8395 | 0.5503 |
+| `analisis kualitas air sungai` | 0.7867 | 0.6266 |
+| `faktor risiko stunting pada balita` | 0.7396 | 0.6035 |
+| `harga bitcoin hari ini` (present in corpus: crypto-law papers) | 0.6945 | — |
+| `cara membuat kue ulang tahun` (off-topic) | 0.5592 | — |
+| `resep rendang padang` (off-topic) | 0.5379 | — |
+| `jadwal sepak bola liga inggris` (off-topic) | 0.4924 | — |
+| one word `stunting` | 0.5265 | — |
 
-Noise tops out at 0.46 and relevant phrases start at 0.58, so `0.53` sits in the
-gap. Single-word queries fall below it on purpose: they are too vague to be
-called relevant. Ask for what you want in a phrase instead of lowering the bar —
-and accept an empty list when the corpus genuinely has nothing.
+Off-topic noise tops out at **0.559**, and all three relevant phrases clear
+`0.60` with a full 100 results. `0.60` sits in that gap.
 
-If you change the corpus, the model, or the ingestion code, re-measure before
-trusting the constant: run `python ingest.py --query "<phrase>"` for a few
-relevant and off-topic phrases and compare the reported similarities. If the
-bands overlap, fix retrieval rather than inventing a threshold.
+Two things this table makes explicit:
+
+- **0.53 no longer works on the full corpus.** It let food-adjacent noise through
+  — `resep rendang padang` returned a *mochi* thesis at 0.5379 — while a
+  legitimate one-word query (`stunting`, 0.5265) fell below it. The old number
+  came from a 1,000-doc sample and did not survive the corpus growing 48×.
+- **More documents raises both bands.** Relevant phrases rose from 0.58–0.73 to
+  0.74–0.84 because a larger corpus contains closer lexical matches; noise rose
+  from ≤0.46 to ≤0.559 for the same reason. Do not assume the number is portable.
+
+Single-word queries still fall below the gate on purpose: one word carries too
+little context to be called relevant. Ask for what you want in a phrase instead
+of lowering the bar — and accept an empty list when the corpus genuinely has
+nothing.
+
+If you change the corpus, the model, or the ingestion code, **re-measure before
+trusting the constant**: run `python ingest.py --query "<phrase>" --min-similarity 0`
+for a few relevant and off-topic phrases and compare the reported similarities.
+If the bands overlap, fix retrieval rather than inventing a threshold.
 
 ## Observability
 
@@ -305,7 +322,7 @@ docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest pr
 | `status=list_only`, message about quota | Gemini 429 / rate limit | Wait, or raise the quota |
 | `status=list_only`, message "Model LLM '...' tidak ditemukan" | Wrong `GEMINI_MODEL` | Use a currently available model name |
 | `status=list_only`, message "tidak merespons tepat waktu" | Gemini was slower than 15 s | Retry; if it happens often, check quota and network |
-| `status=no_results` on a one-word query | Short queries score below the default (0.47 vs 0.58–0.73 for phrases) | Ask in a phrase with more context; do not lower the threshold just to fill the list |
+| `status=no_results` on a one-word query | Short queries score much lower than phrases (one word `stunting` 0.53 vs 0.74–0.84 for phrases) | Ask in a phrase with more context; do not lower the threshold just to fill the list |
 | `status=no_results` every time | Threshold too strict, or the corpus genuinely has no match | Score a phrase with `python ingest.py --query "<phrase>"`; if nothing is close, the retrieval is the problem, not the threshold |
 | `status=no_results`, `arahan` says "Belum ada dokumen" | Collection is empty | Run `python ingest.py --all` |
 | `docker compose logs -f` shows an old traceback after a successful restart | `-f` replays the whole history, including the previous failed attempt | Use `docker compose logs --tail 40 aisen-api`, and confirm with `docker inspect aisen-api --format '{{.State.Health.Status}}'` |
@@ -314,17 +331,18 @@ docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest pr
 
 ## Known limitations
 
-- **Sample, not corpus.** `ingest.py` stops at the first 1,000 valid records in
-  OAI order (5,035 records scanned on the live feed), so the indexed set is an
-  early-page sample rather than a random one.
+- **Sample, not whole corpus, by default.** `INGEST_TARGET` defaults to 1,000
+  records in OAI order, so a default ingest is an early-page sample rather than a
+  random one. The measured 0.60 assumes the full ~47,913-record corpus; a small
+  ingest shifts both bands down and needs re-measuring.
 - **Truncated abstracts.** The embedding model truncates at 128 tokens, so
   stored vectors effectively represent the title plus the opening of the
   abstract.
 - **Top 100 only.** The service always fetches 100 candidates and filters them in
   Python; there is no pagination or `offset`.
-- **Threshold measured on one sample.** `0.53` separates relevant from off-topic
-  on this 1,000-record sample; re-measure on a different corpus. See
-  [Why the default is 0.53](#why-the-default-is-053).
+- **Threshold measured on one corpus.** `0.60` separates relevant from off-topic
+  on the full 47,913-record collection; re-measure on a different corpus. See
+  [Why the default is 0.60](#why-the-default-is-060).
 - **No authentication or rate limiting.** Anyone who can reach the port can spend
   Gemini quota.
 - **No incremental ingestion.** Re-running `ingest.py --index` deletes and

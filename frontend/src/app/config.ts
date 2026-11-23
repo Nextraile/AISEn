@@ -14,7 +14,7 @@
 const FALLBACK = {
   apiBaseUrl: "",
   apiTimeoutMs: 15_000,
-  defaultThreshold: 0.53,
+  defaultThreshold: 0.60,
   resultsPerPage: 10,
   searchDebounceMs: 350,
   relevanceLow: 0.4,

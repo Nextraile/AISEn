@@ -49,7 +49,7 @@ by `.dockerignore` — the committed `.env` is for the dev server only.
 |---|---|---|---|
 | `VITE_API_BASE_URL` | `http://localhost:8000` | `/api` | Backend base URL. In Docker the UI calls its own origin and nginx proxies. |
 | `VITE_API_TIMEOUT_MS` | `15000` | `15000` | Request timeout. Keep above the backend's `LLM_TIMEOUT_SECONDS` (15 s). |
-| `VITE_DEFAULT_THRESHOLD` | `0.53` | `0.53` | Minimum similarity sent when none is chosen. Must match `THRESHOLD_DEFAULT`. |
+| `VITE_DEFAULT_THRESHOLD` | `0.60` | `0.60` | Minimum similarity sent when none is chosen. Must match `THRESHOLD_DEFAULT`. |
 | `VITE_RESULTS_PER_PAGE` | `10` | `10` | Result cards per page. |
 | `VITE_SEARCH_DEBOUNCE_MS` | `350` | `350` | Delay after typing before a request fires. |
 | `VITE_RELEVANCE_LOW` | `0.4` | `0.4` | Gentle preset. Must stay inside the backend's `THRESHOLD_MIN..MAX`. |

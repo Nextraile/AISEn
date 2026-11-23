@@ -14,7 +14,7 @@ def test_defaults_match_previous_constants():
     assert s.summary_top_k == 5
     assert s.llm_timeout_seconds == 15
     assert s.log_level == "INFO"
-    assert (s.threshold_min, s.threshold_max, s.threshold_default) == (0.1, 0.9, 0.53)
+    assert (s.threshold_min, s.threshold_max, s.threshold_default) == (0.1, 0.9, 0.60)
     assert s.cors_allow_origins == ("*",)
     assert s.oai_endpoint == "https://eprints2.undip.ac.id/cgi/oai2"
     assert s.ingest_target == 1000
