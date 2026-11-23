@@ -18,8 +18,10 @@ frontend/     React 19 + TypeScript + Vite UI (Tailwind 4)
 ```
 
 Each service is self-contained. Run every command from inside its own
-directory — paths such as `DB_PATH = "./data/vector_db"` and
-`--env-file .env` are relative to `backend/`.
+directory — paths such as `CHROMA_DB_PATH` (default `./data/vector_db`) and
+`--env-file .env` are relative to `backend/`. Compose for the backend lives in
+`backend/docker/`, so those commands name the file:
+`docker compose -f docker/docker-compose.yml ...`.
 
 ## Requirements
 

@@ -312,9 +312,17 @@ data/                      generated and git-ignored, except .gitkeep which keep
 tests/                     test_app.py, test_ingest.py, test_settings.py
                            fake model and fake collection, so no download is needed
 docs/                      API.md, DATA.md, DEMO.md
-pyproject.toml             pytest configuration (pythonpath, testpaths)
+pyproject.toml             pytest configuration (pythonpath, testpaths). No
+                           [build-system] on purpose: nothing is packaged or
+                           installed — the image binds the sources — so an
+                           install step would misrepresent the deployment
 .env.example               full configuration inventory
 ```
+
+Modules are grouped by role, and the grouping carries one rule: `service/`
+never imports `ingestion/`. The API does not need to harvest, and the ingester
+reuses `service.app.rank_results` rather than the reverse, so the dependency
+only ever points one way.
 
 Compose lives in `docker/`, so its paths are relative to that directory and the
 file has to be named when running a command:
@@ -332,7 +340,7 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
 | `/ready` shows `"documents": 0` | Empty collection | Run `python -m ingestion.ingest --all` |
-| `docker compose up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
+| `docker compose -f docker/docker-compose.yml up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
 | `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python -m ingestion.ingest --index`; scores are meaningless otherwise |
 | `/ready` lists `last ingest failed: …` | The most recent `ingestion/ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
@@ -342,7 +350,7 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 | `status=no_results` on a one-word query | Short queries score much lower than phrases (one word `stunting` 0.53 vs 0.74–0.84 for phrases) | Ask in a phrase with more context; do not lower the threshold just to fill the list |
 | `status=no_results` every time | Threshold too strict, or the corpus genuinely has no match | Score a phrase with `python -m ingestion.ingest --query "<phrase>"`; if nothing is close, the retrieval is the problem, not the threshold |
 | `status=no_results`, `arahan` says "Belum ada dokumen" | Collection is empty | Run `python -m ingestion.ingest --all` |
-| `docker compose logs -f` shows an old traceback after a successful restart | `-f` replays the whole history, including the previous failed attempt | Use `docker compose logs --tail 40 aisen-api`, and confirm with `docker inspect aisen-api --format '{{.State.Health.Status}}'` |
+| `docker compose -f docker/docker-compose.yml logs -f` shows an old traceback after a successful restart | `-f` replays the whole history, including the previous failed attempt | Use `docker compose -f docker/docker-compose.yml logs --tail 40 aisen-api`, and confirm with `docker inspect aisen-api --format '{{.State.Health.Status}}'` |
 | `422 Unprocessable Content` | Empty/whitespace `query`, or `threshold` outside 0.1–0.9 | Fix the request body |
 | Browser CORS error | Should not happen (`allow_origins=["*"]`) | Confirm the response carries `access-control-allow-origin: *` |
 

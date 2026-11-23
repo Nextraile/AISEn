@@ -6,7 +6,7 @@ One small service: FastAPI semantic search over harvested Universitas Diponegoro
 
 - `service/app.py` — the service (also what the Dockerfile serves: `CMD uvicorn service.app:app`): async endpoint, embedding/query offloaded via `run_in_threadpool`, explicit `RuntimeError` at startup when the Chroma collection is missing, Gemini summary with citations and fallback to list-only. Adds a request-id middleware and a catch-all 500 handler.
 - `common/config.py` — the single source of configuration: a frozen `Settings` dataclass built by `from_env()`, with `validate()` rejecting impossible combinations at import time. Defaults equal the previously hardcoded constants. `GEMINI_API_KEY` / `GEMINI_MODEL` are intentionally *not* part of it — they are optional and read per call so tests can set and clear them.
-- `common/logging_setup.py` — `configure_logging(service)` installs one stream handler (text or JSON via `LOG_FORMAT`) and an optional file handler (`LOG_FILE`). Both entry points use it; it is idempotent so importing `app` twice in tests does not double lines.
+- `common/logging_setup.py` — `configure_logging(service)` installs one stream handler (text or JSON via `LOG_FORMAT`) and an optional file handler (`LOG_FILE`). Both entry points use it; it is idempotent so importing `service.app` twice in tests does not double lines.
 - `ingestion/ingest.py` — the only data ingestion path: OAI-PMH harvest → `data/documents.json` → embeddings → Chroma. Not run by the app and not in the serving image: the `tools` Compose profile rebuilds the same Dockerfile with `INGEST=1` to include it, so ingestion reuses the cached torch layer instead of downloading it twice. Takes an `flock` (`data/.ingest.lock`) so two runs cannot interleave, encodes in chunks with progress lines, and writes `data/last_ingest.json`.
 - `service/watch.py` — stdlib-only `/ready` poller run as the `watch` Compose service; logs state changes and optionally POSTs to `ALERT_WEBHOOK_URL`.
 
@@ -27,7 +27,6 @@ pip install -r requirements.txt
 python -m ingestion.ingest --all                     # only when data/vector_db/ is missing
 uvicorn service.app:app --reload --port 8000 --env-file .env   # local dev; run from backend/
 pip install -r requirements-dev.txt && pytest   # tests (no model download needed)
-bash run-tests.sh                          # same tests inside the tools image; no local Python
 cp .env.example .env                       # then fill GEMINI_API_KEY and GEMINI_MODEL
 docker compose -f docker/docker-compose.yml up --build        # serves service/app.py on :8000 (needs .env)
 APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait   # writable mount, waits for health
@@ -35,7 +34,7 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "..."  # same ranking as POST /search
 ```
 
-- Run uvicorn from `backend/`: `DB_PATH = "./data/vector_db"` is relative to the CWD.
+- Run uvicorn from `backend/`: `CHROMA_DB_PATH` defaults to `./data/vector_db`, relative to the CWD.
 - `pytest` is the only configured tool (`pyproject.toml`, tests in `tests/`). No linter, formatter, or typechecker is configured; verify before assuming `ruff` etc. exist. To run the suite without local Python, use the `tools` service: `docker compose -f docker/docker-compose.yml --profile tools run --rm --entrypoint python tools -m pytest` (pytest is not in the image, so `pip install pytest` first inside that container). Shell quoting through `wsl.exe` from PowerShell mangles `sh -c "…"` one-liners — put multi-step commands in a script file instead.
 - LLM: Google Gemini via `google-genai`, configured by env `GEMINI_API_KEY` and `GEMINI_MODEL`. Never commit `.env` (it is gitignored). If either is empty the API still works and returns the list only (`status=list_only`). No automatic retry: failures surface in `ringkasan_error` and the user retries manually.
 - `requirements.txt` is range-pinned (`chromadb>=1.5,<2`, `sentence-transformers>=6,<7`); code depends on Chroma 1.x APIs. `docker/docker-compose.yml` bind-mounts `../data` (ChromaDB needs write access; `/ready` reads `last_ingest.json` from the same directory), so the host data is what the container reads; build with `APP_UID=$(id -u)` so the container can write it. The bind-mount source always exists because `data/.gitkeep` is committed — Docker-created directories are root-owned and break `APP_UID`. LLM budget is `LLM_TIMEOUT_SECONDS` (default 15; measured: real calls 1-7 s, tail past 8 s).
