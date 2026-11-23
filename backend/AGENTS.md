@@ -6,7 +6,7 @@ One small service: FastAPI semantic search over harvested Universitas Diponegoro
 
 - `service/app.py` — the service (also what the Dockerfile serves: `CMD uvicorn service.app:app`): async endpoint, embedding/query offloaded via `run_in_threadpool`, explicit `RuntimeError` at startup when the Chroma collection is missing, Gemini summary with citations and fallback to list-only. Adds a request-id middleware and a catch-all 500 handler.
 - `common/config.py` — the single source of configuration: a frozen `Settings` dataclass built by `from_env()`, with `validate()` rejecting impossible combinations at import time. Defaults equal the previously hardcoded constants. `GEMINI_API_KEY` / `GEMINI_MODEL` are intentionally *not* part of it — they are optional and read per call so tests can set and clear them.
-- `common/logging_setup.py` — `configure_logging(service)` installs one stream handler (text or JSON via `LOG_FORMAT`) and an optional file handler (`LOG_FILE`). Both entry points use it; it is idempotent so importing `service.app` twice in tests does not double lines.
+- `common/logging_setup.py` — `configure_logging(service)` installs one stream handler (text or JSON via `LOG_FORMAT`) and an optional file handler (`LOG_FILE`). Text lines are `[HH:MM:SS] [logger] [LEVEL] message key=value`, with the three columns padded so messages align; third-party DEBUG is indented and truncated. Both entry points use it; it is idempotent so importing `service.app` twice in tests does not double lines. The level is applied on every call, not only the first.
 - `ingestion/ingest.py` — the only data ingestion path: OAI-PMH harvest → `data/documents.json` → embeddings → Chroma. Not run by the app and not in the serving image: the `tools` Compose profile rebuilds the same Dockerfile with `INGEST=1` to include it, so ingestion reuses the cached torch layer instead of downloading it twice. Takes an `flock` (`data/.ingest.lock`) so two runs cannot interleave, encodes in chunks with progress lines, and writes `data/last_ingest.json`.
 - `service/watch.py` — stdlib-only `/ready` poller run as the `watch` Compose service; logs state changes and optionally POSTs to `ALERT_WEBHOOK_URL`.
 
@@ -43,9 +43,9 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --que
 
 - Both entry points call `common.logging_setup.configure_logging`, so `LOG_LEVEL` (previously ignored by `ingestion/ingest.py`), `LOG_FORMAT=text|json`, and `LOG_FILE` apply everywhere.
 - Every request gets an `X-Request-ID` (accepted or generated), echoed in the response and included in the middleware line, the `search` line, and the JSON body of an unexpected 500. The frontend sends its own id on every request.
-- Ingest cadence is configurable: `PROGRESS_EVERY` for harvest lines, `EMBED_CHUNK_SIZE` for encode lines (`--progress-every` / `--embed-chunk-size` override per run). Encode reports `done/total (%), docs/s, eta`.
+- Ingest cadence is configurable: `PROGRESS_EVERY` for harvest lines, `EMBED_CHUNK_SIZE` for encode lines (`--progress-every` / `--embed-chunk-size` override per run). Encode reports `done=/pct=/rate=/eta=`.
 - `ingest_lock()` is a hard single-writer guard via `flock` on `data/.ingest.lock`; a second run exits with code 2 and name of the holder. Never bypass it by deleting the lock while a run is live.
-- `main()` wraps the stages: the last line is `ingest complete in …` or `INGEST FAILED after …: <Type>: <msg>`, and `data/last_ingest.json` records status/stage/timings/counts/error. `/ready` surfaces that file.
+- `main()` wraps the stages: the last line is `ingest complete    took=…` or `INGEST FAILED      stage=… error=<Type>: <msg>`, and `data/last_ingest.json` records status/stage/timings/counts/error. `/ready` surfaces that file.
 - The `watch` Compose service polls `/ready` every 30 s and logs only transitions; `ALERT_WEBHOOK_URL` adds a webhook notification.
 - Both Compose services cap logs with `json-file` `max-size: 10m`, `max-file: 3`.
 

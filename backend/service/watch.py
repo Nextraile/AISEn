@@ -30,12 +30,14 @@ TIMEOUT = float(os.getenv("WATCH_TIMEOUT_SECONDS", "5"))
 WEBHOOK = os.getenv("ALERT_WEBHOOK_URL", "")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _log(message: str) -> None:
-    print(f"{_now()} watch: {message}", flush=True)
+    """Same bracketed shape as `common.logging_setup`, so `docker logs` reads alike.
+
+    `watch.py` deliberately imports nothing from the package: it is a liveness
+    sidecar and must not pull in chromadb or the embedding model to run.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"[{stamp}] [watch   ] [INFO ] {message}", flush=True)
 
 
 def probe() -> tuple[bool, str]:
@@ -45,12 +47,12 @@ def probe() -> tuple[bool, str]:
             body = response.read(2000).decode("utf-8", "replace")
             if response.status == 200:
                 return True, f"status={response.status}"
-            return False, f"status={response.status} {body}"
+            return False, f"status={response.status} body={body}"
     except urllib.error.HTTPError as error:
         body = error.read(2000).decode("utf-8", "replace")
-        return False, f"status={error.code} {body}"
+        return False, f"status={error.code} body={body}"
     except Exception as error:  # noqa: BLE001 - unreachable/timeout/JSON all mean unhealthy
-        return False, f"{type(error).__name__}: {error}"
+        return False, f"error={type(error).__name__}: {error}"
 
 
 def notify(message: str) -> None:
@@ -66,15 +68,15 @@ def notify(message: str) -> None:
     try:
         urllib.request.urlopen(request, timeout=TIMEOUT).read()
     except Exception as error:  # noqa: BLE001 - a failed alert must not stop the loop
-        _log(f"webhook failed: {type(error).__name__}: {error}")
+        _log(f"webhook failed     error={type(error).__name__}: {error}")
 
 
 def main() -> int:
-    _log(f"watching {WATCH_URL} every {INTERVAL:g}s")
+    _log(f"watching           url={WATCH_URL} interval={INTERVAL:g}s")
 
     healthy, detail = probe()
     previous = healthy
-    _log(f"initial state: {'healthy' if healthy else 'UNHEALTHY'} ({detail})")
+    _log(f"initial state      health={'healthy' if healthy else 'UNHEALTHY'} {detail}")
 
     while True:
         time.sleep(INTERVAL)
@@ -88,8 +90,8 @@ def main() -> int:
             message = f"AISEn API is UNHEALTHY ({WATCH_URL}): {detail}"
 
         _log(
-            f"state change: {'healthy' if previous else 'UNHEALTHY'} -> "
-            f"{'healthy' if healthy else 'UNHEALTHY'} ({detail})"
+            f"state change       from={'healthy' if previous else 'UNHEALTHY'} "
+            f"to={'healthy' if healthy else 'UNHEALTHY'} {detail}"
         )
         notify(message)
         previous = healthy

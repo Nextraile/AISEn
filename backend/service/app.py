@@ -65,8 +65,8 @@ def _uptime_seconds(target_app: FastAPI) -> float | None:
 
 def _log_configuration() -> None:
     log.info(
-        "config: model=%s collection=%s db=%s n_results=%d threshold=%.2f "
-        "llm_timeout=%ss log_level=%s log_format=%s",
+        "configuration      model=%s collection=%s db=%s n_results=%d "
+        "threshold=%.2f llm_timeout=%ss log_level=%s log_format=%s",
         SETTINGS.model_name,
         SETTINGS.collection_name,
         SETTINGS.db_path,
@@ -82,7 +82,7 @@ def _open_collection(target_app: FastAPI) -> None:
     """Open the Chroma collection and warn about anything that would make scores meaningless."""
     # Log before touching the DB: on a network share (e.g. \\wsl.localhost from
     # Windows) SQLite can hang silently, and this line marks where it stopped.
-    log.info("Opening ChromaDB at '%s'...", SETTINGS.db_path)
+    log.info("opening database   path=%s", SETTINGS.db_path)
     client = chromadb.PersistentClient(path=SETTINGS.db_path)
 
     try:
@@ -99,26 +99,26 @@ def _open_collection(target_app: FastAPI) -> None:
     collection = target_app.state.collection
     total_documents = collection.count()
     log.info(
-        "ChromaDB ready: %d documents in collection '%s' (%s)",
+        "database ready     documents=%d collection=%s path=%s",
         total_documents,
         SETTINGS.collection_name,
         SETTINGS.db_path,
     )
     if total_documents == 0:
         log.warning(
-            "Collection '%s' is EMPTY: every search will return 'no_results' "
-            "even though the startup checks pass. Build the index with "
-            "`python -m ingestion.ingest --all` on the host, or from Docker with "
-            "`docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all`.",
+            "collection is EMPTY, every search will return no_results even "
+            "though the startup checks pass  collection=%s fix=%s",
             SETTINGS.collection_name,
+            "python -m ingestion.ingest --all (or the tools profile)",
         )
 
     metadata = collection.metadata or {}
     if metadata.get("hnsw:space") != "cosine":
         log.warning(
-            "Collection '%s' does not use hnsw:space=cosine: similarity scores "
-            "are meaningless (a threshold on the 0.1-0.9 scale has no meaning).",
+            "collection does not use cosine space, similarity scores are "
+            "meaningless  collection=%s hnsw_space=%s",
             SETTINGS.collection_name,
+            metadata.get("hnsw:space") or "unset",
         )
 
     # Stored vectors and query vectors must come from the same model. Changing
@@ -127,8 +127,9 @@ def _open_collection(target_app: FastAPI) -> None:
     recorded_model = metadata.get("embedding_model")
     if recorded_model and recorded_model != SETTINGS.model_name:
         log.warning(
-            "Collection '%s' was built with model '%s' but EMBEDDING_MODEL is "
-            "now '%s'. Re-run `python -m ingestion.ingest --index`.",
+            "collection was built with a different model, re-run "
+            "`python -m ingestion.ingest --index`  collection=%s "
+            "built_with=%s embedding_model=%s",
             SETTINGS.collection_name,
             recorded_model,
             SETTINGS.model_name,
@@ -138,7 +139,7 @@ def _open_collection(target_app: FastAPI) -> None:
 def _load_model(target_app: FastAPI) -> None:
     """Create the embedding model and pick up the optional LLM configuration."""
     log.info(
-        "Loading embedding model '%s' (the first download can take a while)...",
+        "loading model      model=%s (the first download can take a while)",
         SETTINGS.model_name,
     )
 
@@ -147,17 +148,18 @@ def _load_model(target_app: FastAPI) -> None:
     from sentence_transformers import SentenceTransformer
 
     target_app.state.model = SentenceTransformer(SETTINGS.model_name)
-    log.info("Embedding model ready.")
+    log.info("model ready        model=%s", SETTINGS.model_name)
     target_app.state.summarize = summarize_with_llm
 
     gemini_model = os.getenv("GEMINI_MODEL")
     if not (os.getenv("GEMINI_API_KEY") and gemini_model):
         log.warning(
-            "GEMINI_API_KEY / GEMINI_MODEL are not set: AI summaries are "
-            "disabled and the API returns the journal list only."
+            "AI summaries disabled, the API returns the journal list only  "
+            "reason=%s",
+            "GEMINI_API_KEY / GEMINI_MODEL are not set",
         )
     else:
-        log.info("AI summaries enabled with Gemini model '%s'.", gemini_model)
+        log.info("AI summaries enabled  gemini_model=%s", gemini_model)
 
 
 @asynccontextmanager
@@ -200,7 +202,7 @@ async def request_context(request: Request, call_next):
         response = await call_next(request)
     except Exception:  # noqa: BLE001 - logged with the id, re-raised to the handle
         log.exception(
-            "request failed request_id=%s %s %s",
+            "request failed     request_id=%s method=%s path=%s",
             request_id,
             request.method,
             request.url.path,
@@ -210,7 +212,8 @@ async def request_context(request: Request, call_next):
     duration_ms = (time.perf_counter() - started) * 1000
     response.headers["X-Request-ID"] = request_id
     log.info(
-        "request request_id=%s method=%s path=%s status=%d duration_ms=%.0f",
+        "request            request_id=%s method=%s path=%s status=%d "
+        "duration_ms=%.0f",
         request_id,
         request.method,
         request.url.path,
@@ -224,7 +227,7 @@ async def request_context(request: Request, call_next):
 async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     """Turn an unexpected error into a JSON 500 that carries the request id."""
     request_id = getattr(request.state, "request_id", "-")
-    log.exception("unhandled error request_id=%s", request_id, exc_info=exc)
+    log.exception("unhandled error    request_id=%s", request_id, exc_info=exc)
     return JSONResponse(
         status_code=500,
         content={
@@ -331,7 +334,7 @@ def sanitize_citations(text: str, valid: set[int]) -> str:
         kept = [n for n in numbers if n in valid]
         dropped = [n for n in numbers if n not in valid]
         if dropped:
-            log.warning("Dropped invalid citations: %s", dropped)
+            log.warning("dropped invalid citations  citations=%s", dropped)
         return " ".join(f"[{n}]" for n in kept)
 
     return _CITATION.sub(keep, text)
@@ -509,13 +512,15 @@ async def _summarize(query: str, results: list[SearchResult]) -> str:
             timeout=SETTINGS.llm_timeout_seconds,
         )
     except asyncio.TimeoutError:
-        log.warning("LLM timed out after %ss", SETTINGS.llm_timeout_seconds)
+        log.warning(
+            "LLM timed out      timeout=%ss", SETTINGS.llm_timeout_seconds
+        )
         raise SummaryError("LLM tidak merespons tepat waktu. Coba lagi.") from None
     except LLMError as exc:
-        log.warning("LLM failed: %s", exc)
+        log.warning("LLM failed         reason=%s", exc)
         raise SummaryError(str(exc)) from exc
     except Exception:
-        log.exception("LLM failed (unexpected error)")
+        log.exception("LLM failed         reason=unexpected error")
         raise SummaryError("Ringkasan gagal dibuat. Coba lagi.") from None
 
 
@@ -552,7 +557,8 @@ async def search(payload: SearchRequest, request: Request) -> SearchResponse:
             ringkasan_error = str(exc)
 
     log.info(
-        "search request_id=%s status=%s count=%d threshold=%.2f duration_ms=%.0f",
+        "search             request_id=%s status=%s count=%d threshold=%.2f "
+        "duration_ms=%.0f",
         getattr(request.state, "request_id", "-"),
         status,
         len(results),

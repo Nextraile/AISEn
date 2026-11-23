@@ -282,7 +282,7 @@ def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, cap
         code = ingest.main(["--harvest"])
 
     assert code == 1
-    assert "INGEST FAILED in stage 'harvest'" in caplog.text
+    assert "INGEST FAILED      stage=harvest" in caplog.text
 
     payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
     assert payload["status"] == "failed"

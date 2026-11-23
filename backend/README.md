@@ -165,7 +165,7 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `LLM_TIMEOUT_SECONDS` | `15` | Gemini budget before falling back to `list_only` |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed origins |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
-| `LOG_FORMAT` | `text` | `text` or `json` (one JSON object per line, for a collector) |
+| `LOG_FORMAT` | `text` | `text` for `[time] [logger] [LEVEL] message key=value`; `json` for one JSON object per line when a collector reads it |
 | `LOG_FILE` | — | Also append logs to this file, e.g. `logs/aisen.log` |
 | `OAI_ENDPOINT` | `https://eprints2.undip.ac.id/cgi/oai2` | Harvest source |
 | `INGEST_TARGET` | `1000` | Valid records to harvest |
@@ -263,9 +263,22 @@ hang:
 
 - **Ingestion** logs a harvest line every `PROGRESS_EVERY` records and an encode
   line per `EMBED_CHUNK_SIZE` documents, including rate and ETA
-  (`encode: 25000/47915 (52%) 19.3 docs/s eta 19m`). Each stage is timed, and
-  the run ends with `ingest complete in 41m12s: records=47915, documents=47915`
-  or `INGEST FAILED after …: TypeError: …`.
+  (`embedding          done=25000/47915 pct=52% rate=19.3/s eta=19m`). Each
+  stage is timed, and the run ends with
+  `ingest complete    took=41m12s records=47915 documents=47915` or
+  `INGEST FAILED      stage=index after=2m03s error=TypeError: …`.
+- **Log shape.** Terminal lines are `[HH:MM:SS] [logger] [LEVEL] message`, with
+  the data as `key=value` so it stays greppable:
+
+  ```
+  [07:44:54] [ingest  ] [INFO    ] harvest complete   valid=47945 scanned=55575
+  ```
+
+  The three bracketed columns are padded to a fixed width, so the message always
+  starts at the same column and the eye can skip straight past them. Third-party
+  libraries log through the same handler; their DEBUG chatter is indented and
+  truncated so it reads as background instead of competing with the app's lines.
+  Use `LOG_FORMAT=json` when a collector is reading, not a person.
 - **One writer.** `ingestion/ingest.py` takes an `flock` on `data/.ingest.lock`; a second
   run exits immediately with `another ingest is already running (pid …)`
   instead of interleaving a delete with the other run's inserts.

@@ -230,9 +230,7 @@ def harvest(
 
         items.append(record_to_item(metadata))
         if len(items) % every == 0:
-            log.info(
-                "harvest: %d valid of %d records scanned", len(items), scanned
-            )
+            log.info("harvesting         valid=%d scanned=%d", len(items), scanned)
         if len(items) >= target:
             break
 
@@ -242,7 +240,7 @@ def harvest(
         json.dump(items, handle, ensure_ascii=False, indent=2)
 
     log.info(
-        "harvest done: %d valid of %d scanned -> %s", len(items), scanned, path
+        "harvest complete   valid=%d scanned=%d out=%s", len(items), scanned, path
     )
     return items
 
@@ -276,7 +274,7 @@ def _encode_in_chunks(
         rate = done / elapsed if elapsed > 0 else 0.0
         eta = (total - done) / rate if rate > 0 else 0.0
         log.info(
-            "encode: %d/%d (%.0f%%) %.1f docs/s eta %s",
+            "embedding          done=%d/%d pct=%.0f%% rate=%.1f/s eta=%s",
             done,
             total,
             100.0 * done / total,
@@ -325,7 +323,7 @@ def build_index(
         ids.append(f"doc_{idx}")
 
     log.info(
-        "index: %d documents, creating embeddings (chunk=%d, batch=%d)...",
+        "embedding          documents=%d chunk=%d batch=%d",
         len(ids),
         embed_chunk_size or SETTINGS.embed_chunk_size,
         SETTINGS.embed_batch_size,
@@ -351,10 +349,10 @@ def build_index(
             metadatas=metadatas[start:end],
             documents=documents[start:end],
         )
-        log.info("index: %d/%d stored", end, len(ids))
+        log.info("storing            done=%d/%d", end, len(ids))
 
     total = collection.count()
-    log.info("index done: %d documents (%s)", total, collection.metadata)
+    log.info("index complete     documents=%d metadata=%s", total, collection.metadata)
     return total
 
 
@@ -461,7 +459,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.all or args.harvest:
                 stage = "harvest"
                 log.info(
-                    "ingest start: harvest target=%d endpoint=%s",
+                    "ingest start       stage=harvest target=%d endpoint=%s",
                     args.target,
                     args.endpoint,
                 )
@@ -474,22 +472,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
                 log.info(
-                    "stage harvest done in %s: %d records",
-                    _format_duration(elapsed()),
+                    "stage complete     stage=harvest records=%d took=%s",
                     counts["records"],
+                    _format_duration(elapsed()),
                 )
             if args.all or args.index:
                 stage = "index"
-                log.info("stage index start: %s -> %s", args.json, args.db)
+                log.info("stage start        stage=index source=%s db=%s", args.json, args.db)
                 counts["documents"] = build_index(
                     json_path=args.json,
                     db_path=args.db,
                     embed_chunk_size=args.embed_chunk_size,
                 )
                 log.info(
-                    "stage index done in %s: %d documents",
-                    _format_duration(elapsed()),
+                    "stage complete     stage=index documents=%d took=%s",
                     counts["documents"],
+                    _format_duration(elapsed()),
                 )
             if args.query:
                 stage = "query"
@@ -504,11 +502,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         file=sys.stderr,
                     )
     except IngestLocked as error:
-        log.error("INGEST REFUSED: %s", error)
+        log.error("INGEST REFUSED     reason=%s", error)
         return 2
     except Exception as error:  # noqa: BLE001 - the last line must state the cause
         log.error(
-            "INGEST FAILED in stage '%s' after %s: %s: %s",
+            "INGEST FAILED      stage=%s after=%s error=%s: %s",
             stage,
             _format_duration(elapsed()),
             type(error).__name__,
@@ -533,9 +531,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         counts=counts,
     )
     log.info(
-        "ingest complete in %s: %s",
+        "ingest complete    took=%s %s",
         _format_duration(elapsed()),
-        ", ".join(f"{name}={value}" for name, value in counts.items()) or "nothing to do",
+        " ".join(f"{name}={value}" for name, value in counts.items()) or "counts=0",
     )
     return 0
 
