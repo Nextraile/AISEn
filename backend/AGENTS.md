@@ -12,7 +12,7 @@ One small service: FastAPI semantic search over harvested Universitas Diponegoro
 
 ## Data prerequisites (the #1 startup failure)
 
-- `./data/vector_db` is gitignored and required at startup. If absent, the app fails to boot (`RuntimeError` in `app.py`).
+- `./data/vector_db` is gitignored and required at startup. If absent, the app fails to boot (`RuntimeError` in `app.py`). `backend/data/` itself is tracked via `data/.gitkeep` (`.gitignore` uses `/data/*` plus `!/data/.gitkeep`): a missing bind-mount source would be created as root by Docker and then be unwritable by `APP_UID`. Do not remove that placeholder or revert the ignore rules to `/data/`.
 - Ingest from `backend/` with `python ingest.py --all`: harvests OAI-PMH (`https://eprints2.undip.ac.id/cgi/oai2`, `metadataPrefix=oai_dc`, target 1000 valid records) → writes `data/documents.json` → embeds `"{title}. {description}"` and inserts into Chroma. `--harvest` / `--index` run one stage.
 - `ingest.py` **deletes and recreates** collection `undip_research_search` with `{"hnsw:space": "cosine"}`. Re-running wipes existing vectors; there is no incremental update path.
 - Inserts are batched at 1000 because Chroma rejects larger batches (~5461 cap).
@@ -38,7 +38,7 @@ docker compose --profile tools run --rm tools ingest.py --query "..."  # same ra
 - Run uvicorn from `backend/`: `DB_PATH = "./data/vector_db"` is relative to the CWD.
 - `pytest` is the only configured tool (`pytest.ini`, tests in `tests/`). No linter, formatter, or typechecker is configured; verify before assuming `ruff` etc. exist. `run-tests.sh` layers `docker-compose.test.yml` (which only relaxes the tools service) and runs the suite in the tool image — shell quoting through `wsl.exe` from PowerShell mangles `sh -c "…"` one-liners, so use the script.
 - LLM: Google Gemini via `google-genai`, configured by env `GEMINI_API_KEY` and `GEMINI_MODEL`. Never commit `.env` (it is gitignored). If either is empty the API still works and returns the list only (`status=list_only`). No automatic retry: failures surface in `ringkasan_error` and the user retries manually.
-- `requirements.txt` is range-pinned (`chromadb>=1.5,<2`, `sentence-transformers>=6,<7`); code depends on Chroma 1.x APIs. `docker-compose.yml` bind-mounts `./data` (ChromaDB needs write access; `/ready` reads `last_ingest.json` from the same directory), so the host data is what the container reads; build with `APP_UID=$(id -u)` so the container can write it. LLM budget is `LLM_TIMEOUT_SECONDS` (default 15; measured: real calls 1-7 s, tail past 8 s).
+- `requirements.txt` is range-pinned (`chromadb>=1.5,<2`, `sentence-transformers>=6,<7`); code depends on Chroma 1.x APIs. `docker-compose.yml` bind-mounts `./data` (ChromaDB needs write access; `/ready` reads `last_ingest.json` from the same directory), so the host data is what the container reads; build with `APP_UID=$(id -u)` so the container can write it. The bind-mount source always exists because `data/.gitkeep` is committed — Docker-created directories are root-owned and break `APP_UID`. LLM budget is `LLM_TIMEOUT_SECONDS` (default 15; measured: real calls 1-7 s, tail past 8 s).
 
 ## Observability
 

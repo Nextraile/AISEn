@@ -1,4 +1,7 @@
-/data/
+# Everything under data/ is generated, except the placeholder that keeps the
+# directory itself in git (so Docker never has to create it as root).
+/data/*
+!/data/.gitkeep
 __pycache__/
 .pytest_cache/
 .env

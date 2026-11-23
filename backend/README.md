@@ -294,7 +294,9 @@ settings.py                every configurable value, read once from the environm
 logging_setup.py           text/json/file logging shared by the API and ingest.py
 ingest.py                  the only ingestion path: OAI-PMH -> JSON -> embeddings -> Chroma
 watch.py                   /ready poller that logs state changes and optionally alerts
-data/                      generated, git-ignored (vector_db/, documents.json, last_ingest.json)
+data/                      generated and git-ignored, except .gitkeep which keeps
+                           the directory itself tracked (Docker would create a
+                           missing bind-mount source as root)
 tests/test_app.py          API tests; fake model and fake collection, no downloads
 tests/test_ingest.py       ingestion tests; fake records, model, and Chroma client
 tests/test_settings.py     config parsing and validation
@@ -315,7 +317,7 @@ docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest pr
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
 | `/ready` shows `"documents": 0` | Empty collection | Run `python ingest.py --all` |
-| `docker compose up` logs `the ChromaDB directory is not writable by this container` | Bind-mounted DB owned by a different UID than `APP_UID` | Rebuild with the printed fix: `APP_UID=$(id -u) docker compose up -d --build`, or `chmod -R a+rwX data/vector_db` as a stopgap |
+| `docker compose up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
 | `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python ingest.py --index`; scores are meaningless otherwise |
 | `/ready` lists `last ingest failed: …` | The most recent `ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |

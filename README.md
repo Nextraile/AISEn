@@ -50,10 +50,16 @@ cd ..\frontend
 docker compose up -d --build --wait
 ```
 
-`APP_UID` lets the container write the bind-mounted `./data/vector_db`. On
-Linux/WSL prefix the command instead: `APP_UID=$(id -u) docker compose up -d
---build --wait`. If it does not match, `docker-entrypoint.sh` stops the container
-and prints the owner UID and the container UID, rather than a SQLite traceback.
+`APP_UID` lets the container write the bind-mounted `./data`. On Linux/WSL
+prefix the command instead: `APP_UID=$(id -u) docker compose up -d --build
+--wait`. If it does not match, `docker-entrypoint.sh` stops the container and
+prints the owner UID and the container UID, rather than a SQLite traceback.
+
+`backend/data/` is committed as an empty directory (via `data/.gitkeep`) for a
+reason: Docker creates a missing bind-mount source as **root**, which a
+container running as `APP_UID` then cannot write. Keeping the directory in git
+means a fresh clone already owns it, so there is nothing to fix before the
+first `up`.
 
 The browser never calls the API cross-origin: it requests `/api/...` from the
 same origin and nginx proxies that to `http://aisen-api:8000` over the shared
@@ -132,8 +138,9 @@ guidance instead of a list.
 ## Data is not in the repository
 
 `backend/data/vector_db/`, `backend/data/documents.json`, and
-`backend/data/last_ingest.json` are
-git-ignored. A fresh clone has no index. Build it with either path:
+`backend/data/last_ingest.json` are git-ignored, but `backend/data/` itself is
+committed (an empty directory via `data/.gitkeep`) so Docker never has to
+create it as root. A fresh clone has no index. Build it with either path:
 
 ```bash
 # local

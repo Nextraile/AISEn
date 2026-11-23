@@ -6,6 +6,11 @@ Everything here happens in `ingest.py` — there is no other ingestion path.
 > The app reads `./data/vector_db` and refuses to start without it. That
 > directory and `data/documents.json` are git-ignored, so a fresh clone has
 > no data until you run `python ingest.py --all`.
+>
+> `data/` itself *is* tracked (an empty directory via `data/.gitkeep`). That
+> matters for Docker: a missing bind-mount source gets created as root, which
+> the container (running as `APP_UID`) cannot write. Keeping the directory in
+> git means a clone already owns it.
 
 ## Pipeline overview
 
@@ -157,6 +162,6 @@ covers harvesting as well as serving.
 | Chroma rejects an insert batch | Batch over the ~5,461 cap | Keep the 1,000-record batching |
 | `documents: 0` in `/ready` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingest.py` and the server from `backend/` |
 | Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python ingest.py --index` |
-| Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts it |
-| Container exits with `attempt to write a readonly database` | The bind-mounted DB is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; `chmod -R a+rwX data/vector_db` is a stopgap |
+| Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts `./data` |
+| Container exits with `attempt to write a readonly database` | The bind-mounted `./data` is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; a root-owned `./data` (delete-and-recreate without the `.gitkeep`) needs `sudo chown -R "$(id -u):$(id -g)" data` |
 | `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | Give it to the new user and keep the cached model: `docker run --rm -v aisen_model_cache:/model-cache busybox chown -R <uid>:<uid> /model-cache`. `docker compose down -v` also works but redownloads ~470 MB |
