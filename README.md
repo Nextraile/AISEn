@@ -98,6 +98,7 @@ actually answer searches. Compose also runs a `watch` service that polls
 
 ```bash
 cd frontend
+cp .env.example .env     # needed: the fallback is dev-only, see below
 npm ci
 npm run dev
 ```

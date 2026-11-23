@@ -35,8 +35,11 @@ The dev server calls the backend cross-origin using `VITE_API_BASE_URL` from
 `.env` (default `http://localhost:8000`). CORS is open on the backend by
 default, so no proxy is needed.
 
-`.env` is per-checkout and git-ignored; without it the app falls back to the
-defaults in `src/app/config.ts`, which match `.env.example`.
+`.env` is per-checkout and git-ignored. Without it the app falls back to the
+values in `src/app/config.ts`, which match `.env.example` — including
+`VITE_API_BASE_URL`, which falls back to `http://localhost:8000` so the dev
+server reaches the backend on :8000 without a proxy. Copy the file anyway: it is
+where you point the UI at another host or change the UI tuning values.
 
 > **UNC paths:** npm scripts fail when the checkout is reached through
 > `\\wsl.localhost\...`. Run this from inside WSL, or use the Docker path above —

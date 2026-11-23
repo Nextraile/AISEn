@@ -42,6 +42,7 @@ Frontend:
 
 ```bash
 cd frontend
+cp .env.example .env   # the dev fallback is localhost:8000; this pins every value
 npm ci
 npm run dev        # http://localhost:5173
 npm run build      # tsc -b && vite build
