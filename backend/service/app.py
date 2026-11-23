@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 from starlette.concurrency import run_in_threadpool
 
-from common.logging_setup import configure_logging
+from common.log import configure_logging
 from common.config import SETTINGS
 
 # Threshold bounds are captured by `SearchRequest` when the class is created,

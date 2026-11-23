@@ -31,16 +31,16 @@ WEBHOOK = os.getenv("ALERT_WEBHOOK_URL", "")
 
 
 def _log(message: str) -> None:
-    """Same bracketed shape as `common.logging_setup`, so `docker logs` reads alike.
+    """Same bracketed shape as `common.log`, so `docker logs` reads alike.
 
     `watch.py` deliberately imports nothing from the package: it is a liveness
     sidecar and must not pull in chromadb or the embedding model to run.
     """
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%H:%M:%S") + ".{:03d}".format(now.microsecond // 1000)
-    # Same frame as `common.logging_setup.TextFormatter`: one space between
-    # cells, nothing inside a bracket, `: ` before the message. A literal
-    # because this module is stdlib-only by design; keep it in step.
+    # Same frame as `common.log.TextFormatter`: one space between cells, nothing
+    # inside a bracket, `: ` before the message. A literal because this module is
+    # stdlib-only by design; keep it in step.
     print(
         f"[{stamp}] [INFO] [watch]: {message}",
         flush=True,

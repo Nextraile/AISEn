@@ -16,11 +16,11 @@ import re
 
 import pytest
 
-from common import logging_setup
+from common import log
 
 
 def _render(record: logging.LogRecord) -> str:
-    return logging_setup.TextFormatter().format(record)
+    return log.TextFormatter().format(record)
 
 
 def _record(name: str, level: int, msg: str, args=(), data=None, **extra) -> logging.LogRecord:
@@ -53,7 +53,7 @@ def test_no_padding_inside_any_bracket(level):
 
 def test_cell_is_the_value_between_tight_brackets():
     for value in ("15:25:33.123", "INFO", "CRITICAL", "ingest", "httpcore"):
-        cell = logging_setup._cell(value)
+        cell = log._cell(value)
         assert cell == "[{}]".format(value)
         assert len(cell) == len(value) + 2, "just the brackets, no inner space"
 
@@ -62,7 +62,7 @@ def test_timestamp_has_milliseconds():
     line = _render(_record("aisen.ingest", logging.INFO, "BODY"))
     stamp = _bodies(line)[0]
     assert re.fullmatch(r"\d\d:\d\d:\d\d\.\d{3}", stamp), stamp
-    assert len(stamp) == logging_setup.TIMESTAMP_WIDTH
+    assert len(stamp) == log.TIMESTAMP_WIDTH
 
 
 def test_cells_are_separated_by_exactly_one_space():
@@ -134,7 +134,7 @@ def test_value_punctuation_is_passed_through_byte_for_byte():
         ("stage", "harvest"),
     ]
     for key, value in cases:
-        rendered = logging_setup._pair(key, value)
+        rendered = log._pair(key, value)
         tail = rendered.split("=", 1)[1]
         recovered = json.loads(tail) if tail.startswith('"') else tail
         assert recovered == value, (key, rendered)
@@ -149,7 +149,7 @@ def test_pair_keeps_punctuation_byte_for_byte():
         ("took", "15m59s"),
         ("error", "TypeError: NoneType object has no attribute get"),
     ]:
-        rendered = logging_setup._pair(key, value)
+        rendered = log._pair(key, value)
         assert rendered.startswith(key + "=")
         tail = rendered.split("=", 1)[1]
         recovered = json.loads(tail) if tail.startswith('"') else tail
@@ -157,13 +157,13 @@ def test_pair_keeps_punctuation_byte_for_byte():
 
 
 def test_value_with_spaces_or_newlines_is_quoted_and_recoverable():
-    rendered = logging_setup._pair("error", "ValueError: bad\n- line two")
+    rendered = log._pair("error", "ValueError: bad\n- line two")
     assert "\n" not in rendered, "a newline in a value must not break the one-line rule"
     assert json.loads(rendered.split("=", 1)[1]) == "ValueError: bad\n- line two"
 
 
 def test_value_with_parens_is_not_respaced():
-    rendered = logging_setup._pair("text", "Reading (partial) results")
+    rendered = log._pair("text", "Reading (partial) results")
     assert "( partial )" not in rendered
     assert json.loads(rendered.split("=", 1)[1]) == "Reading (partial) results"
 
@@ -171,7 +171,7 @@ def test_value_with_parens_is_not_respaced():
 def test_pipe_inside_a_value_cannot_be_mistaken_for_the_separator():
     # Any value with a literal ` | ` has whitespace, so `_pair` quotes it and the
     # pipe ends up inside the quotes. That is what keeps the divider unambiguous.
-    rendered = logging_setup._pair("k", "a | b")
+    rendered = log._pair("k", "a | b")
     assert rendered == 'k="a | b"'
     line = _render(_record("aisen.ingest", logging.INFO, "phrase", data={"k": "a | b"}))
     assert line.endswith(': phrase | k="a | b"')
@@ -190,7 +190,7 @@ def test_third_party_debug_is_indented_and_bounded():
     line = _render(
         _record("urllib3.connectionpool", logging.DEBUG, "GET " + "x" * 400)
     )
-    assert line.startswith(logging_setup.NOISE_INDENT + "[")
+    assert line.startswith(log.NOISE_INDENT + "[")
     assert "\n" not in line
     assert len(line) < 200
 
@@ -201,7 +201,7 @@ def test_noise_uses_the_same_frame_as_app_lines():
     assert noise.lstrip().split("]: ", 1)[0].split("] [", 1)[1] == "DEBUG] [urllib3"
     # Same divider, same convention; only the indent and the level differ.
     assert noise.count("]: ") == 1
-    assert noise.startswith(logging_setup.NOISE_INDENT)
+    assert noise.startswith(log.NOISE_INDENT)
     assert app.count("]: ") == 1
 
 
@@ -228,7 +228,7 @@ def test_traceback_is_not_indented():
 
 
 def test_logger_column_is_wide_enough_for_every_known_logger():
-    for name in logging_setup.LOGGER_VALUES:
+    for name in log.LOGGER_VALUES:
         line = _render(_record("aisen." + name, logging.INFO, "BODY"))
         # No truncation marker means the frame did not have to cut it.
         assert "…" not in line
@@ -240,7 +240,7 @@ def test_logger_column_is_wide_enough_for_every_known_logger():
 
 def test_json_format_still_one_object_per_line():
     record = _record("aisen.search", logging.INFO, "x", request_id="abc")
-    payload = json.loads(logging_setup.JsonFormatter().format(record))
+    payload = json.loads(log.JsonFormatter().format(record))
     assert payload["level"] == "INFO"
     assert payload["logger"] == "aisen.search"
     assert payload["request_id"] == "abc"
@@ -248,7 +248,7 @@ def test_json_format_still_one_object_per_line():
 
 def test_json_format_spreads_extra_data_flat():
     record = _record("aisen.ingest", logging.INFO, "harvesting", data={"valid": 250})
-    payload = json.loads(logging_setup.JsonFormatter().format(record))
+    payload = json.loads(log.JsonFormatter().format(record))
     assert payload["valid"] == 250
     assert "extra_data" not in payload
     assert payload["message"] == "harvesting"

@@ -32,7 +32,7 @@ from typing import Iterable, Iterator, Sequence
 import chromadb
 
 from service.app import rank_results
-from common.logging_setup import configure_logging
+from common.log import configure_logging
 from common.config import SETTINGS
 
 log = logging.getLogger("aisen.ingest")

@@ -316,7 +316,7 @@ SETTINGS`), so every command runs from `backend/`.
 ```
 common/
   config.py                every configurable value, read once from the environment
-  logging_setup.py         text/json/file logging shared by the API and the ingester
+  log.py                   text/json/file logging shared by the API and the ingester
 service/
   app.py                   the service: lifespan, schemas, /search, /health, /ready, Gemini
   watch.py                 /ready poller that logs state changes and optionally alerts
