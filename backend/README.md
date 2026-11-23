@@ -106,8 +106,8 @@ If the UID does not match, `docker-entrypoint.sh` stops the container before
 ChromaDB is opened and prints the owner UID, the container UID, and the exact
 command to fix it — instead of the raw `attempt to write a readonly database`
 traceback. The default is `10001`, so a plain `docker compose -f
-  docker/docker-compose.yml up` always starts
-the guard path rather than depending on the host UID.
+docker/docker-compose.yml up` always starts the guard path rather than depending
+on the host UID.
 
 The collection has to exist before the server starts: build it on the host with
 `python -m ingestion.ingest --all`, or use the Docker-only path below.
@@ -139,9 +139,9 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --que
 ```
 
 `--profile tools` is needed because the service is hidden by default, so a plain
-`docker compose ... up` still starts only the API. This is the Docker-only path: no
-`pip install`, and `--query` uses the same `rank_results()` as `POST /search`,
-so its scores match the API exactly.
+`docker compose -f docker/docker-compose.yml up` still starts only the API. This
+is the Docker-only path: no `pip install`, and `--query` uses the same
+`rank_results()` as `POST /search`, so its scores match the API exactly.
 
 For a demo, running uvicorn directly is simpler and has fewer moving parts.
 

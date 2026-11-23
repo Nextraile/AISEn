@@ -34,9 +34,9 @@ explain_and_exit() {
     echo "git, so it is created as your own user. It only goes wrong if the" >&2
     echo "directory was deleted and Docker recreated it as root. Fix that with:" >&2
     echo "  Linux/WSL : sudo chown -R \$(id -u):\$(id -g) data" >&2
-    echo "              APP_UID=\$(id -u) docker compose up -d --build --wait" >&2
+    echo "              cd backend && APP_UID=\$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait" >&2
     echo "  PowerShell: \$env:APP_UID='$(id -u 2>/dev/null || echo 1000)'" >&2
-    echo "              docker compose up -d --build --wait" >&2
+    echo "              cd backend; docker compose -f docker/docker-compose.yml up -d --build --wait" >&2
     echo "" >&2
     echo "Stopgap only: chmod -R a+rwX \"$TARGET\" on the host." >&2
     exit 1

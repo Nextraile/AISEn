@@ -6,9 +6,10 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        # Match the host UID so the bind-mounted ./data/vector_db is writable by the container
-        # Linux/WSL: APP_UID=$(id -u) docker compose up
-        # PowerShell: $env:APP_UID=1000; docker compose up
+        # Match the host UID so the bind-mounted data directory is writable by
+        # the container. Run these from backend/:
+        # Linux/WSL: APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up
+        # PowerShell: $env:APP_UID=1000; docker compose -f docker/docker-compose.yml up
 
         APP_UID: ${APP_UID:-10001}
     container_name: aisen-api
