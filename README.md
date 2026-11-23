@@ -43,7 +43,7 @@ docker compose --profile tools run --rm tools ingest.py --all
 
 # 2. API -> http://localhost:8000  (returns once healthy)
 docker compose up -d --build --wait
-curl.exe -s http://localhost:8000/health
+curl.exe -s http://localhost:8000/ready
 
 # 3. UI -> http://localhost:3000
 cd ..\frontend
@@ -78,9 +78,13 @@ uvicorn app:app --reload --port 8000 --env-file .env
 ```
 
 ```bash
-curl http://localhost:8000/health
-# {"status":"ok","documents":1000,"llm_configured":true,"metric":"cosine"}
+curl http://localhost:8000/ready
+# {"status":"ok","documents":1000,"metric":"cosine","problems":[],...}
 ```
+
+`GET /health` is liveness only; `GET /ready` is what confirms the index can
+actually answer searches. Compose also runs a `watch` service that polls
+`/ready` and logs state changes.
 
 **2. Frontend — `http://localhost:5173`**
 
@@ -127,7 +131,8 @@ guidance instead of a list.
 
 ## Data is not in the repository
 
-`backend/data/vector_db/` and `backend/data/documents.json` are
+`backend/data/vector_db/`, `backend/data/documents.json`, and
+`backend/data/last_ingest.json` are
 git-ignored. A fresh clone has no index. Build it with either path:
 
 ```bash

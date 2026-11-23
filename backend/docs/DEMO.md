@@ -52,12 +52,12 @@ when something does not cooperate. Written for the prototype as it exists today.
   ```bash
   docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
   ```
-- [ ] Check all three health facts in one call:
+- [ ] Check every readiness fact in one call:
   ```bash
-  curl http://localhost:8000/health
+  curl http://localhost:8000/ready
   ```
-  Expect `"documents": 1000` (or whatever your harvest produced),
-  `"llm_configured": true`, `"metric": "cosine"`.
+  Expect `"status": "ok"`, `"documents"` equal to whatever your harvest produced,
+  `"llm_configured": true`, `"metric": "cosine"`, and `"problems": []`.
 - [ ] Sanity-check the relevance gate (there is no separate calibration script):
   ```bash
   python ingest.py --query "analisis kualitas air sungai"
@@ -121,7 +121,7 @@ clears the relevance bar.
 | `status=list_only` with a quota message | "The search still works; the AI layer is rate-limited" | Show the ranked list — that is the fallback design, not a failure |
 | `status=list_only` with "belum dikonfigurasi" | `.env` not loaded — usually a missing `--env-file .env` | Restart with the flag |
 | `status=list_only` with "tidak merespons tepat waktu" | Gemini was slower than 15 s | Say "the model is slow, here is the list", then retry the query |
-| Empty results on everything | DB is empty, or every query is genuinely off-topic | Check `/health` first; do not lower the threshold just to fill the list |
+| Empty results on everything | DB is empty, or every query is genuinely off-topic | Check `/ready` first; do not lower the threshold just to fill the list |
 | Server will not start (`collection ... was not found`) | Wrong directory or missing DB | Start uvicorn from `backend/`; if the DB is missing, switch to screenshots |
 | Network is down | Gemini is unreachable | Screenshots of a `full` response; the retrieval path works offline |
 

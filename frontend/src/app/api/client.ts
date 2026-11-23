@@ -16,6 +16,7 @@ import {
 import type { ApiErrorKind } from "./errors";
 import {
   createAuthInterceptor,
+  createLoggingInterceptor,
   jsonHeadersInterceptor,
   unwrapEnvelopeInterceptor,
 } from "./interceptors";
@@ -28,6 +29,7 @@ import type {
   ResponseInterceptor,
 } from "./types";
 import { config } from "../config";
+import { logger } from "../logging";
 
 const DEFAULT_BASE_URL: string = config.apiBaseUrl;
 const DEFAULT_TIMEOUT_MS = config.apiTimeoutMs;
@@ -83,6 +85,15 @@ export function createApiClient(config: ApiClientConfig = {}): ApiClient {
       startedAt: Date.now(),
     };
 
+    // Echo the request id to the backend so its log line and this one join up.
+    const headers: Record<string, string> = { ...intercepted.headers };
+    const hasRequestId = Object.keys(headers).some(
+      (name) => name.toLowerCase() === "x-request-id"
+    );
+    if (hasRequestId === false) {
+      headers["X-Request-ID"] = context.requestId;
+    }
+
     const timeoutSignal = AbortSignal.timeout(
       intercepted.timeoutMs ?? defaultTimeoutMs
     );
@@ -92,7 +103,7 @@ export function createApiClient(config: ApiClientConfig = {}): ApiClient {
     try {
       response = await fetch(url, {
         method: intercepted.method,
-        headers: intercepted.headers,
+        headers,
         body: buildRequestBody(intercepted),
         signal,
       });
@@ -144,7 +155,12 @@ export function createApiClient(config: ApiClientConfig = {}): ApiClient {
 }
 
 /** Instance client default yang dipakai seluruh fitur. */
-export const apiClient: ApiClient = createApiClient();
+const loggingInterceptor = createLoggingInterceptor(logger);
+
+export const apiClient: ApiClient = createApiClient({
+  requestInterceptors: [loggingInterceptor.request],
+  responseInterceptors: [loggingInterceptor.response],
+});
 
 export function combineSignals(signals: readonly (AbortSignal | undefined)[]): AbortSignal {
   const defined = signals.filter(

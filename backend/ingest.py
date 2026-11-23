@@ -21,24 +21,118 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import time
+from contextlib import contextmanage
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence
 
 import chromadb
 
 from app import rank_results
+from logging_setup import configure_logging
 from settings import SETTINGS
 
-# Log a progress line every N valid records; harvesting a thousand records is
-# slow enough that silence looks like a hang.
-PROGRESS_EVERY = 250
+log = logging.getLogger("aisen.ingest")
 
 # Stored in document metadata when the repository has no date. It is data, not
 # a message, and it is displayed to users, so it stays Indonesian.
 UNKNOWN_DATE = "Tanggal tidak diketahui"
 
-log = logging.getLogger("aisen.ingest")
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _format_duration(seconds: float) -> str:
+    total = int(max(0.0, seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+class IngestLocked(RuntimeError):
+    """Another ingest already holds the single-writer lock."""
+
+
+@contextmanage
+def ingest_lock(path: Path | None = None) -> Iterator[None]:
+    """Refuse to run two ingests against the same directory.
+
+    The collection is rewritten in place (delete, then re-add), so two processes
+    running at once interleave a delete with the other's inserts and the winne
+    is undefined. That is worth a hard stop, not a warning.
+    """
+    lock_path = path or Path(SETTINGS.ingest_json_path).parent / ".ingest.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+
+    try:
+        import fcntl  # POSIX only; Docker and WSL both have it
+    except ImportError:
+        log.debug("fcntl unavailable on this platform; skipping the ingest lock")
+        yield
+        handle.close()
+        return
+
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        holder = lock_path.read_text(encoding="utf-8").strip()
+        handle.close()
+        raise IngestLocked(
+            "another ingest is already running"
+            + (f" ({holder})" if holder else "")
+            + f"; wait for it to finish, or remove {lock_path} if it is stale"
+        ) from None
+
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid {os.getpid()} started {_utc_now()}")
+    handle.flush()
+    try:
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
+def _write_run_summary(
+    *,
+    status: str,
+    stage: str,
+    started_at: str,
+    duration_s: float,
+    counts: dict[str, int],
+    error: str | None = None,
+) -> None:
+    """Record how the last run ended, next to the data it produced.
+
+    A removed `--rm` container takes its logs with it; this file is what answers
+    "did the last ingest work?" from the host or from `/ready`.
+    """
+    path = Path(SETTINGS.ingest_json_path).parent / "last_ingest.json"
+    payload = {
+        "status": status,
+        "stage": stage,
+        "started_at": started_at,
+        "finished_at": _utc_now(),
+        "duration_s": round(duration_s, 1),
+        "records_harvested": counts.get("records"),
+        "documents_indexed": counts.get("documents"),
+        "target": SETTINGS.ingest_target,
+        "model": SETTINGS.model_name,
+        "collection": SETTINGS.collection_name,
+        "error": error,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -111,6 +205,7 @@ def harvest(
     endpoint: str = SETTINGS.oai_endpoint,
     output: str | Path = SETTINGS.ingest_json_path,
     records: Iterable | None = None,
+    progress_every: int | None = None,
 ) -> list[dict]:
     """Collect `target` valid records and write them as JSON.
 
@@ -119,6 +214,7 @@ def harvest(
     if target < 1:
         raise ValueError(f"--target must be >= 1 (got {target})")
 
+    every = progress_every or SETTINGS.progress_every
     items: list[dict] = []
     scanned = 0
     stream = records if records is not None else _default_records(endpoint)
@@ -133,7 +229,7 @@ def harvest(
             continue
 
         items.append(record_to_item(metadata))
-        if len(items) % PROGRESS_EVERY == 0:
+        if len(items) % every == 0:
             log.info(
                 "harvest: %d valid of %d records scanned", len(items), scanned
             )
@@ -152,12 +248,52 @@ def harvest(
 
 
 # ---- index -----------------------------------------------------------------
+def _encode_in_chunks(
+    model, documents: Sequence[str], chunk_size: int | None = None
+) -> list[list[float]]:
+    """Embed `documents` in chunks, logging after each one.
+
+    A single `model.encode(...)` over ~48k abstracts is tens of minutes with no
+    output, which is indistinguishable from a hang. Encoding in chunks also
+    bounds peak memory: the full matrix as Python floats is hundreds of MB.
+    """
+    total = len(documents)
+    size = max(1, chunk_size or SETTINGS.embed_chunk_size)
+    vectors: list[list[float]] = []
+    started = time.monotonic()
+
+    for start in range(0, total, size):
+        chunk = list(documents[start : start + size])
+        vectors.extend(
+            model.encode(
+                chunk,
+                batch_size=SETTINGS.embed_batch_size,
+                show_progress_bar=False,
+            ).tolist()
+        )
+        done = len(vectors)
+        elapsed = time.monotonic() - started
+        rate = done / elapsed if elapsed > 0 else 0.0
+        eta = (total - done) / rate if rate > 0 else 0.0
+        log.info(
+            "encode: %d/%d (%.0f%%) %.1f docs/s eta %s",
+            done,
+            total,
+            100.0 * done / total,
+            rate,
+            _format_duration(eta),
+        )
+
+    return vectors
+
+
 def build_index(
     json_path: str | Path = SETTINGS.ingest_json_path,
     db_path: str = SETTINGS.db_path,
     batch_size: int = SETTINGS.insert_batch_size,
     model=None,
     client=None,
+    embed_chunk_size: int | None = None,
 ) -> int:
     """(Re)build the Chroma collection from the harvested JSON.
 
@@ -170,7 +306,7 @@ def build_index(
         raise ValueError(f"{json_path} is empty: run --harvest first")
 
     if model is None:
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransforme
 
         model = SentenceTransformer(SETTINGS.model_name)
 
@@ -188,12 +324,13 @@ def build_index(
         )
         ids.append(f"doc_{idx}")
 
-    log.info("index: %d documents, creating embeddings...", len(ids))
-    embeddings = model.encode(
-        documents,
-        batch_size=SETTINGS.embed_batch_size,
-        show_progress_bar=False,
-    ).tolist()
+    log.info(
+        "index: %d documents, creating embeddings (chunk=%d, batch=%d)...",
+        len(ids),
+        embed_chunk_size or SETTINGS.embed_chunk_size,
+        SETTINGS.embed_batch_size,
+    )
+    embeddings = _encode_in_chunks(model, documents, embed_chunk_size)
 
     client = client or chromadb.PersistentClient(path=db_path)
     try:
@@ -232,7 +369,7 @@ def query_demo(
 ) -> list[dict]:
     """Sanity-check the index with the same ranking code as POST /search."""
     if model is None:
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransforme
 
         model = SentenceTransformer(SETTINGS.model_name)
 
@@ -272,6 +409,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="number of valid records to collect",
     )
     parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=SETTINGS.progress_every,
+        help="log a harvest progress line every N valid records",
+    )
+    parser.add_argument(
+        "--embed-chunk-size",
+        type=int,
+        default=SETTINGS.embed_chunk_size,
+        help="embed and log in chunks of this many documents",
+    )
+    parser.add_argument(
         "--endpoint", default=SETTINGS.oai_endpoint, help="OAI-PMH endpoint URL"
     )
     parser.add_argument(
@@ -288,34 +437,106 @@ def build_parser() -> argparse.ArgumentParser:
         default=SETTINGS.threshold_default,
         help="minimum similarity for --query",
     )
-    return parser
+    return parse
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    configure_logging("aisen.ingest")
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if not (args.harvest or args.index or args.all or args.query):
         parser.error("choose one of --harvest, --index, --all, --query")
 
-    if args.all or args.harvest:
-        harvest(target=args.target, endpoint=args.endpoint, output=args.json)
-    if args.all or args.index:
-        build_index(json_path=args.json, db_path=args.db)
-    if args.query:
-        results = query_demo(
-            args.query, db_path=args.db, min_similarity=args.min_similarity
+    started_at = _utc_now()
+    started = time.monotonic()
+    counts: dict[str, int] = {}
+    stage = "harvest" if (args.all or args.harvest) else ("index" if args.index else "query")
+
+    def elapsed() -> float:
+        return time.monotonic() - started
+
+    try:
+        with ingest_lock():
+            if args.all or args.harvest:
+                stage = "harvest"
+                log.info(
+                    "ingest start: harvest target=%d endpoint=%s",
+                    args.target,
+                    args.endpoint,
+                )
+                counts["records"] = len(
+                    harvest(
+                        target=args.target,
+                        endpoint=args.endpoint,
+                        output=args.json,
+                        progress_every=args.progress_every,
+                    )
+                )
+                log.info(
+                    "stage harvest done in %s: %d records",
+                    _format_duration(elapsed()),
+                    counts["records"],
+                )
+            if args.all or args.index:
+                stage = "index"
+                log.info("stage index start: %s -> %s", args.json, args.db)
+                counts["documents"] = build_index(
+                    json_path=args.json,
+                    db_path=args.db,
+                    embed_chunk_size=args.embed_chunk_size,
+                )
+                log.info(
+                    "stage index done in %s: %d documents",
+                    _format_duration(elapsed()),
+                    counts["documents"],
+                )
+            if args.query:
+                stage = "query"
+                results = query_demo(
+                    args.query, db_path=args.db, min_similarity=args.min_similarity
+                )
+                for item in results:
+                    print(f"[{item['peringkat']}] {item['skor']:.4f}  {item['judul']}")
+                if not results:
+                    print(
+                        f"No document reached similarity >= {args.min_similarity:.2f}.",
+                        file=sys.stderr,
+                    )
+    except IngestLocked as error:
+        log.error("INGEST REFUSED: %s", error)
+        return 2
+    except Exception as error:  # noqa: BLE001 - the last line must state the cause
+        log.error(
+            "INGEST FAILED in stage '%s' after %s: %s: %s",
+            stage,
+            _format_duration(elapsed()),
+            type(error).__name__,
+            error,
+            exc_info=True,
         )
-        for item in results:
-            print(f"[{item['peringkat']}] {item['skor']:.4f}  {item['judul']}")
-        if not results:
-            print(
-                f"No document reached similarity >= {args.min_similarity:.2f}.",
-                file=sys.stderr,
-            )
+        _write_run_summary(
+            status="failed",
+            stage=stage,
+            started_at=started_at,
+            duration_s=elapsed(),
+            counts=counts,
+            error=f"{type(error).__name__}: {error}",
+        )
+        return 1
+
+    _write_run_summary(
+        status="ok",
+        stage=stage,
+        started_at=started_at,
+        duration_s=elapsed(),
+        counts=counts,
+    )
+    log.info(
+        "ingest complete in %s: %s",
+        _format_duration(elapsed()),
+        ", ".join(f"{name}={value}" for name, value in counts.items()) or "nothing to do",
+    )
     return 0
 
 

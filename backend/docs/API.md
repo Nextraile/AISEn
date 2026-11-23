@@ -1,7 +1,7 @@
 # API Reference
 
 Complete contract for the Undip Research Semantic Search API. Every field,
-status, and error below matches `app.py` (app version `0.2.0`).
+status, and error below matches `app.py` (app version `0.3.0`).
 
 - Base URL (local): `http://localhost:8000`
 - Content type: `application/json` for requests and responses
@@ -12,6 +12,8 @@ status, and error below matches `app.py` (app version `0.2.0`).
 - [Scoring: similarity, not distance](#scoring-similarity-not-distance)
 - [`POST /search`](#post-search)
 - [`GET /health`](#get-health)
+- [`GET /ready`](#get-ready)
+- [Errors](#errors)
 - [CORS](#cors)
 - [Limits and timing](#limits-and-timing)
 - [Contract changelog](#contract-changelog)
@@ -314,7 +316,10 @@ paper metadata and every LLM failure are handled and do **not** produce a 500.
   prompt instructs the model to answer only from those sources and to cite each
   claim as `[n]`.
 - **Logging.** Exactly one line per request:
-  `search status=<status> count=<n> threshold=<t> duration_ms=<ms>`.
+  `search request_id=<id> status=<status> count=<n> threshold=<t> duration_ms=<ms>`,
+  plus a `request request_id=<id> method=… path=… status=… duration_ms=…` line
+  from the middleware. `X-Request-ID` is accepted from the caller or generated
+  and always echoed in the response.
 - **Concurrency.** Endpoint is `async`; encoding and the Chroma query run in a
   threadpool, so a slow query does not block the event loop.
 
@@ -322,32 +327,77 @@ paper metadata and every LLM failure are handled and do **not** produce a 500.
 
 ## `GET /health`
 
-No parameters, no authentication.
+Liveness only; no database work, so it is safe to poll every 30 s (the Compose
+healthcheck does). Always `200` while the process serves HTTP.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `status` | string | Always `"ok"` when the app is serving |
+| `status` | string | Always `"ok"` |
+| `version` | string | Application version |
+| `uptime_s` | number \| null | Seconds since startup |
+
+```json
+{ "status": "ok", "version": "0.3.0", "uptime_s": 142.7 }
+```
+
+---
+
+## `GET /ready`
+
+Readiness: can this process actually answer searches? Returns `200` when every
+check passes and `503` with a `problems` list otherwise. The checks run against
+the live collection, so this is the endpoint to load before a demo.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `status` | string | `"ok"` or `"not_ready"` |
 | `documents` | integer | Number of vectors in the collection |
+| `metric` | string \| null | `hnsw:space`; must be `"cosine"` |
+| `model` | string | Current `EMBEDDING_MODEL` |
+| `version` | string | Application version |
+| `uptime_s` | number \| null | Seconds since startup |
 | `llm_configured` | boolean | Whether both Gemini env vars are set (does **not** validate the key or model name) |
-| `metric` | string \| null | Value of `hnsw:space` on the collection; expected `"cosine"` |
+| `last_ingest` | object \| null | Contents of `data/last_ingest.json`, or `null` if no run is recorded |
+| `problems` | array | Human-readable reasons the service is not ready; empty when `ok` |
 
 ```json
 {
   "status": "ok",
-  "documents": 1000,
+  "documents": 47915,
+  "metric": "cosine",
+  "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "version": "0.3.0",
+  "uptime_s": 142.7,
   "llm_configured": true,
-  "metric": "cosine"
+  "last_ingest": { "status": "ok", "documents_indexed": 47915 },
+  "problems": []
 }
 ```
 
-Reading it:
+The `503` cases, all reported in `problems`:
 
 - `documents: 0` → ingestion never ran; every search will be `no_results`.
 - `metric` not `"cosine"` → stored vectors were built with a different distance
   function; `skor` is not a similarity and the 0.1–0.9 threshold is meaningless.
-- `llm_configured: false` → searches work, summaries never appear.
+- collection model differs from `EMBEDDING_MODEL` → re-run `ingest.py --index`.
+- `last_ingest.status == "failed"` → the most recent run aborted; the `error`
+  field says why.
 
-Use `/health` before a demo; use `/search` to prove the LLM actually responds.
+`llm_configured: false` does not fail readiness: searches work, summaries never
+appear. Use `/search` to prove the LLM actually responds.
+
+---
+
+## Errors
+
+An unexpected server error returns `500` with a JSON body that carries the
+request id, so a user can quote one string that matches the logs:
+
+```json
+{ "detail": "Terjadi kesalahan internal. Coba lagi.", "request_id": "9f2c…" }
+```
+
+The same value is in the `X-Request-ID` response header.
 
 ---
 
@@ -396,7 +446,8 @@ Useful for frontend clients written against an earlier build.
 | AI summary | none | optional, `status` reflects whether it was produced |
 | Summary prompt | terse; no length or structure limit | capped at 3 paragraphs / 180 words, forbids invented facts and repeated titles |
 | Citations | `[1, 2, 3]` left as-is | split into `[1] [2] [3]`; invalid numbers removed |
-| `/health` | `{status, documents}` | adds `llm_configured`, `metric` |
+| `/health` | `{status, documents}` | `{status, version, uptime_s}`; the data facts moved to `/ready` |
+| Readiness | — | `/ready` returns `503` with `problems` when the index is empty, non-cosine, mismatched, or the last ingest failed |
 | Metadata handling | direct indexing, `KeyError` possible | missing fields become `""` |
 | LLM timeout | 20 s → 8 s | 15 s (measured: real calls run 1–7 s with a tail past 8 s) |
 | Default threshold | `0.5` (a guess) | `0.53` (measured midpoint: noise ≤ 0.46, relevant phrases ≥ 0.58) |

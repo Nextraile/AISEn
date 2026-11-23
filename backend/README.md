@@ -164,15 +164,23 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `LLM_TIMEOUT_SECONDS` | `15` | Gemini budget before falling back to `list_only` |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed origins |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `LOG_FORMAT` | `text` | `text` or `json` (one JSON object per line, for a collector) |
+| `LOG_FILE` | — | Also append logs to this file, e.g. `logs/aisen.log` |
 | `OAI_ENDPOINT` | `https://eprints2.undip.ac.id/cgi/oai2` | Harvest source |
 | `INGEST_TARGET` | `1000` | Valid records to harvest |
 | `INGEST_JSON_PATH` | `data/documents.json` | Harvest output |
 | `INSERT_BATCH_SIZE` | `1000` | Records per ChromaDB insert (cap ≈ 5,461) |
 | `EMBED_BATCH_SIZE` | `64` | Documents per embedding batch |
+| `PROGRESS_EVERY` | `250` | Log a harvest progress line every N valid records |
+| `EMBED_CHUNK_SIZE` | `5000` | Encode and log in chunks of N documents |
 | `MIN_DESCRIPTION_CHARS` | `50` | Harvest filter: skip shorter abstracts |
+| `WATCH_INTERVAL_SECONDS` | `30` | `watch` service poll interval for `/ready` |
+| `WATCH_TIMEOUT_SECONDS` | `5` | `watch` service request timeout |
+| `ALERT_WEBHOOK_URL` | — | Optional webhook the `watch` service POSTs state changes to |
 
-Ingestion flags (`--target`, `--endpoint`, `--json`, `--db`) still override the
-corresponding variables for a single run.
+Ingestion flags (`--target`, `--endpoint`, `--json`, `--db`, `--progress-every`,
+`--embed-chunk-size`) still override the corresponding variables for a single
+run.
 
 Invalid combinations stop the process at import time with a message naming the
 offending variable — for example `THRESHOLD_DEFAULT` outside `MIN..MAX`,
@@ -188,7 +196,8 @@ file requires a restart either way. `.env` is git-ignored; never commit it.
 | Endpoint | Purpose |
 |---|---|
 | `POST /search` | Semantic search over the indexed papers, with optional AI summary |
-| `GET /health` | Liveness plus `documents`, `llm_configured`, `metric` |
+| `GET /health` | Liveness only: process is up, version and uptime. No database work |
+| `GET /ready` | Readiness: collection open, non-empty, cosine, model matched; `503` with `problems` otherwise |
 
 Full contract — every field, every status, every error, and the
 distance-vs-similarity rule that trips everyone up — is in
@@ -229,13 +238,46 @@ trusting the constant: run `python ingest.py --query "<phrase>"` for a few
 relevant and off-topic phrases and compare the reported similarities. If the
 bands overlap, fix retrieval rather than inventing a threshold.
 
+## Observability
+
+Long-running work announces itself, so a silent process is never mistaken for a
+hang:
+
+- **Ingestion** logs a harvest line every `PROGRESS_EVERY` records and an encode
+  line per `EMBED_CHUNK_SIZE` documents, including rate and ETA
+  (`encode: 25000/47915 (52%) 19.3 docs/s eta 19m`). Each stage is timed, and
+  the run ends with `ingest complete in 41m12s: records=47915, documents=47915`
+  or `INGEST FAILED after …: TypeError: …`.
+- **One writer.** `ingest.py` takes an `flock` on `data/.ingest.lock`; a second
+  run exits immediately with `another ingest is already running (pid …)`
+  instead of interleaving a delete with the other run's inserts.
+- **Persisted outcome.** Every run writes `data/last_ingest.json` (status, stage,
+  timings, counts, error). `/ready` surfaces it, so "did the last ingest work?"
+  does not depend on scrollback from a `--rm` container.
+- **Request correlation.** Every request gets an `X-Request-ID` (accepted from
+  the caller or generated), echoed in the response and in each log line, and
+  included in the JSON body of an unexpected `500`.
+- **Configuration dump.** Startup logs the model, collection, threshold, log
+  level, and LLM budget once, so a wrong `.env` is visible without guessing.
+- **`watch` service.** Sits next to `aisen-api`, polls `/ready` every 30 s, and
+  logs only state changes. Set `ALERT_WEBHOOK_URL` to also receive a Discord or
+  generic webhook message when the API goes down or recovers.
+- **Bounded logs.** Both services use the `json-file` driver with `max-size: 10m`
+  and `max-file: 3`, so logs cannot fill the disk.
+
+`GET /health` is deliberately database-free (it backs the Compose healthcheck,
+so a broken index never causes a restart loop). Use `GET /ready` for the facts
+that decide whether searches can work.
+
 ## Project structure
 
 ```
-app.py                     the entire service: lifespan, schemas, /search, /health, Gemini
+app.py                     the service: lifespan, schemas, /search, /health, /ready, Gemini
 settings.py                every configurable value, read once from the environment
+logging_setup.py           text/json/file logging shared by the API and ingest.py
 ingest.py                  the only ingestion path: OAI-PMH -> JSON -> embeddings -> Chroma
-data/                      generated, git-ignored (vector_db/ and documents.json)
+watch.py                   /ready poller that logs state changes and optionally alerts
+data/                      generated, git-ignored (vector_db/, documents.json, last_ingest.json)
 tests/test_app.py          API tests; fake model and fake collection, no downloads
 tests/test_ingest.py       ingestion tests; fake records, model, and Chroma client
 tests/test_settings.py     config parsing and validation
@@ -245,7 +287,7 @@ docs/DEMO.md               pre-meeting checklist and demo runbook
 .env.example               full configuration inventory
 Dockerfile                 CPU-only image, non-root user, INGEST arg for the tools image
 docker-entrypoint.sh       UID/writability guard, checked before the server starts
-docker-compose.yml         aisen-api, the `tools` ingest profile, and the model cache volume
+docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest profile, model cache
 ```
 
 ## Troubleshooting
@@ -255,9 +297,10 @@ docker-compose.yml         aisen-api, the `tools` ingest profile, and the model 
 | `RuntimeError: ChromaDB collection 'undip_research_search' was not found` | Database missing, or uvicorn started from the wrong directory | Build the DB ([docs/DATA.md](docs/DATA.md)) and run from `backend/` |
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
-| `/health` shows `"documents": 0` | Empty collection | Run `python ingest.py --all` |
+| `/ready` shows `"documents": 0` | Empty collection | Run `python ingest.py --all` |
 | `docker compose up` logs `the ChromaDB directory is not writable by this container` | Bind-mounted DB owned by a different UID than `APP_UID` | Rebuild with the printed fix: `APP_UID=$(id -u) docker compose up -d --build`, or `chmod -R a+rwX data/vector_db` as a stopgap |
-| `/health` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python ingest.py --index`; scores are meaningless otherwise |
+| `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python ingest.py --index`; scores are meaningless otherwise |
+| `/ready` lists `last ingest failed: …` | The most recent `ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
 | `status=list_only`, message about quota | Gemini 429 / rate limit | Wait, or raise the quota |
 | `status=list_only`, message "Model LLM '...' tidak ditemukan" | Wrong `GEMINI_MODEL` | Use a currently available model name |

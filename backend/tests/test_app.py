@@ -43,13 +43,19 @@ class FakeCollection:
         return len(self.distances)
 
 
-def make_client(distances, summarize=None, metadatas=None):
+def make_client(distances, summarize=None, metadatas=None, raise_server_exceptions=True):
     # TestClient is used WITHOUT `with`, so lifespan (real model + ChromaDB)
     # never runs; the components are replaced with fakes instead.
     app.app.state.model = FakeModel()
     app.app.state.collection = FakeCollection(distances, metadatas)
     app.app.state.summarize = summarize or (lambda q, r: "Ringkasan [1]")
-    return TestClient(api)
+    return TestClient(api, raise_server_exceptions=raise_server_exceptions)
+
+
+@pytest.fixture(autouse=True)
+def _no_last_ingest(monkeypatch, tmp_path):
+    """Keep /ready deterministic: never read a real data/last_ingest.json."""
+    monkeypatch.setattr(app, "LAST_INGEST_PATH", tmp_path / "last_ingest.json")
 
 
 # ---------- input validation ----------
@@ -138,7 +144,11 @@ def test_n_results_from_environment_is_used(monkeypatch):
 
 
 def test_cors_list_follows_environment():
-    kwargs = app.app.user_middleware[0].kwargs
+    kwargs = next(
+        middleware.kwargs
+        for middleware in app.app.user_middleware
+        if "allow_origins" in middleware.kwargs
+    )
     assert kwargs["allow_origins"] == list(app.SETTINGS.cors_allow_origins)
 
 
@@ -366,7 +376,7 @@ def test_llm_not_configured(monkeypatch):
 
 class _FakeModels:
     def __init__(self, behavior):
-        self.behavior = behavior
+        self.behavior = behavio
 
     def generate_content(self, model, contents):
         return self.behavior()
@@ -455,21 +465,74 @@ def test_prompt_contains_citation_rule_and_sources():
 
 
 # ---------- misc ----------
-def test_health(monkeypatch):
+def test_health_is_liveness_only():
+    # /health must not touch the DB: it backs the Compose healthcheck.
+    body = make_client([0.1, 0.2, 0.3]).get("/health").json()
+    assert body["status"] == "ok"
+    assert body["version"] == app.APP_VERSION
+    assert "documents" not in body
+
+
+def test_ready_reports_a_usable_index(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    assert make_client([0.1, 0.2, 0.3]).get("/health").json() == {
-        "status": "ok",
-        "documents": 3,
-        "llm_configured": False,
-        "metric": "cosine",
-    }
+    response = make_client([0.1, 0.2, 0.3]).get("/ready")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["documents"] == 3
+    assert body["metric"] == "cosine"
+    assert body["llm_configured"] is False
+    assert body["problems"] == []
 
 
-def test_health_flags_llm_configured(monkeypatch):
+def test_ready_flags_llm_configured(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.setenv("GEMINI_MODEL", "m")
-    assert make_client([0.1]).get("/health").json()["llm_configured"] is True
+    assert make_client([0.1]).get("/ready").json()["llm_configured"] is True
+
+
+def test_ready_rejects_an_empty_or_non_cosine_index():
+    empty = make_client([]).get("/ready")
+    assert empty.status_code == 503
+    assert any("empty" in problem for problem in empty.json()["problems"])
+
+    class WrongMetric(FakeCollection):
+        metadata = {"hnsw:space": "l2"}
+
+    client = make_client([0.1])
+    app.app.state.collection = WrongMetric([0.1])
+    body = client.get("/ready").json()
+    assert any("cosine" in problem for problem in body["problems"])
+
+
+def test_ready_reports_a_failed_last_ingest(tmp_path, monkeypatch):
+    summary = tmp_path / "last_ingest.json"
+    summary.write_text(
+        '{"status": "failed", "error": "TypeError: boom"}', encoding="utf-8"
+    )
+    monkeypatch.setattr(app, "LAST_INGEST_PATH", summary)
+    body = make_client([0.1]).get("/ready").json()
+    assert body["problems"] == ["last ingest failed: TypeError: boom"]
+
+
+def test_request_id_is_echoed():
+    response = make_client([0.1]).get("/health", headers={"X-Request-ID": "abc123"})
+    assert response.headers["X-Request-ID"] == "abc123"
+
+
+def test_unhandled_error_returns_request_id():
+    client = make_client([0.1], raise_server_exceptions=False)
+    app.app.state.collection = None  # makes /search raise AttributeErro
+
+    response = client.get("/health")  # sanity: unrelated route still fine
+    assert response.status_code == 200
+
+    response = client.post(
+        "/search", json={"query": "x"}, headers={"X-Request-ID": "boom1"}
+    )
+    assert response.status_code == 500
+    assert response.json()["request_id"] == "boom1"
 
 
 def test_startup_fails_clearly_when_collection_missing(tmp_path, monkeypatch):

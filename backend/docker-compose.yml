@@ -15,9 +15,16 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
-      - ./data/vector_db:/app/data/vector_db
+      # The whole data directory: ChromaDB needs write access, and `/ready`
+      # reads `last_ingest.json` written next to `documents.json` by the CLI.
+      - ./data:/app/data
       - model_cache:/model-cache
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test:
         - CMD
@@ -53,6 +60,36 @@ services:
     # `python ingest.py ...` instead of uvicorn; the file-writability guard is
     # for the server, and here the mount is meant to be written.
     entrypoint: ["python"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Polls /ready and logs only state changes, so a silent outage shows up even
+  # when nobody is watching the API logs. Set ALERT_WEBHOOK_URL in .env to also
+  # receive a message on Discord or any generic webhook.
+  watch:
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-10001}
+        # The serving image omits ingest.py; watch.py is a stdlib script, so
+        # this reuses the same image rather than adding a dependency.
+        INGEST: "0"
+    env_file: .env
+    environment:
+      WATCH_URL: http://aisen-api:8000/ready
+    # `python watch.py` instead of uvicorn; interval and timeout come from .env
+    entrypoint: ["python", "watch.py"]
+    depends_on:
+      - aisen-api
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   model_cache:

@@ -85,7 +85,7 @@ title plus the opening of the abstract — not the whole document.
 
 The service tolerates missing keys (they become `""`) but not a changed distance
 metric: if the collection was not created with `hnsw:space=cosine`, `skor` is not
-a similarity. `/health` reports the metric so this is checkable.
+a similarity. `/ready` reports the metric so this is checkable.
 
 ## Rebuilding from scratch
 
@@ -116,9 +116,13 @@ a similarity. `/health` reports the metric so this is checkable.
 3. Start the server, then confirm:
 
    ```bash
-   curl http://localhost:8000/health
-   # documents == number of harvested records, metric == "cosine"
+   curl http://localhost:8000/ready
+   # status == "ok", documents == number of harvested records, metric == "cosine"
    ```
+
+   A failed run is recorded too: `/ready` puts `last ingest failed: …` in
+   `problems`, and `data/last_ingest.json` holds the stage, timings, counts, and
+   error.
 
 4. Re-check the threshold on the new data with `python ingest.py --query "<phrase>"`
    (see the measured table in the README). If relevant and off-topic scores no
@@ -151,7 +155,7 @@ covers harvesting as well as serving.
 | Fewer than 1,000 records saved | The OAI stream ended early | Read the log and re-run; the count is not a filter problem |
 | `data/documents.json` missing after an error | `json.dump` only runs after a successful harvest loop | Re-run `python ingest.py --harvest` |
 | Chroma rejects an insert batch | Batch over the ~5,461 cap | Keep the 1,000-record batching |
-| `documents: 0` in `/health` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingest.py` and the server from `backend/` |
+| `documents: 0` in `/ready` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingest.py` and the server from `backend/` |
 | Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python ingest.py --index` |
 | Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts it |
 | Container exits with `attempt to write a readonly database` | The bind-mounted DB is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; `chmod -R a+rwX data/vector_db` is a stopgap |

@@ -26,6 +26,8 @@ DEFAULT_N_RESULTS = 100
 DEFAULT_SUMMARY_TOP_K = 5
 DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_FORMAT = "text"
+DEFAULT_LOG_FILE = ""
 DEFAULT_THRESHOLD_MIN = 0.1
 DEFAULT_THRESHOLD_MAX = 0.9
 DEFAULT_THRESHOLD_DEFAULT = 0.53
@@ -38,7 +40,14 @@ DEFAULT_INSERT_BATCH_SIZE = 1000
 DEFAULT_EMBED_BATCH_SIZE = 64
 DEFAULT_MIN_DESCRIPTION_CHARS = 50
 
+# How often the long stages report progress. Both are deliberately configurable:
+# a 48k-record harvest is minutes of silence at the defaults, and a quiet log is
+# indistinguishable from a hung process.
+DEFAULT_PROGRESS_EVERY = 250
+DEFAULT_EMBED_CHUNK_SIZE = 5000
+
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+LOG_FORMATS = ("text", "json")
 
 # ChromaDB rejects a single insert above roughly 5,461 records.
 CHROMA_MAX_BATCH = 5461
@@ -85,6 +94,8 @@ class Settings:
     summary_top_k: int = DEFAULT_SUMMARY_TOP_K
     llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     log_level: str = DEFAULT_LOG_LEVEL
+    log_format: str = DEFAULT_LOG_FORMAT
+    log_file: str = DEFAULT_LOG_FILE
     threshold_min: float = DEFAULT_THRESHOLD_MIN
     threshold_max: float = DEFAULT_THRESHOLD_MAX
     threshold_default: float = DEFAULT_THRESHOLD_DEFAULT
@@ -95,6 +106,8 @@ class Settings:
     ingest_json_path: str = DEFAULT_INGEST_JSON_PATH
     insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE
     embed_batch_size: int = DEFAULT_EMBED_BATCH_SIZE
+    embed_chunk_size: int = DEFAULT_EMBED_CHUNK_SIZE
+    progress_every: int = DEFAULT_PROGRESS_EVERY
     min_description_chars: int = DEFAULT_MIN_DESCRIPTION_CHARS
 
     def validate(self) -> "Settings":
@@ -131,6 +144,14 @@ class Settings:
             problems.append(
                 f"LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}."
             )
+        if self.log_format not in LOG_FORMATS:
+            problems.append(
+                f"LOG_FORMAT must be one of {', '.join(LOG_FORMATS)}."
+            )
+        if self.progress_every < 1:
+            problems.append("PROGRESS_EVERY must be >= 1.")
+        if self.embed_chunk_size < 1:
+            problems.append("EMBED_CHUNK_SIZE must be >= 1.")
         if not 1 <= self.insert_batch_size <= CHROMA_MAX_BATCH:
             problems.append(
                 f"INSERT_BATCH_SIZE must be 1..{CHROMA_MAX_BATCH} (ChromaDB limit)."
@@ -160,6 +181,8 @@ class Settings:
                 source, "LLM_TIMEOUT_SECONDS", DEFAULT_LLM_TIMEOUT_SECONDS, float
             ),
             log_level=_text(source, "LOG_LEVEL", DEFAULT_LOG_LEVEL).upper(),
+            log_format=_text(source, "LOG_FORMAT", DEFAULT_LOG_FORMAT).lower(),
+            log_file=_text(source, "LOG_FILE", DEFAULT_LOG_FILE),
             threshold_min=_number(source, "THRESHOLD_MIN", DEFAULT_THRESHOLD_MIN, float),
             threshold_max=_number(source, "THRESHOLD_MAX", DEFAULT_THRESHOLD_MAX, float),
             threshold_default=_number(
@@ -178,6 +201,12 @@ class Settings:
             ),
             embed_batch_size=_number(
                 source, "EMBED_BATCH_SIZE", DEFAULT_EMBED_BATCH_SIZE, int
+            ),
+            embed_chunk_size=_number(
+                source, "EMBED_CHUNK_SIZE", DEFAULT_EMBED_CHUNK_SIZE, int
+            ),
+            progress_every=_number(
+                source, "PROGRESS_EVERY", DEFAULT_PROGRESS_EVERY, int
             ),
             min_description_chars=_number(
                 source, "MIN_DESCRIPTION_CHARS", DEFAULT_MIN_DESCRIPTION_CHARS, int

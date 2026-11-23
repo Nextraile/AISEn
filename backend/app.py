@@ -9,19 +9,23 @@ Conventions in this file:
 """
 
 import asyncio
-import logging
+import json
 import os
 import re
 import time
-from contextlib import asynccontextmanager
+import uuid
+from contextlib import asynccontextmanage
+from pathlib import Path
 from typing import Literal
 
 import chromadb
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 from starlette.concurrency import run_in_threadpool
 
+from logging_setup import configure_logging
 from settings import SETTINGS
 
 # Threshold bounds are captured by `SearchRequest` when the class is created,
@@ -30,16 +34,48 @@ THRESHOLD_MIN = SETTINGS.threshold_min
 THRESHOLD_MAX = SETTINGS.threshold_max
 THRESHOLD_DEFAULT = SETTINGS.threshold_default
 
+APP_VERSION = "0.3.0"
+
 GUIDANCE = [
     "Coba kalimat yang lebih spesifik.",
     "Perluas topik pencarian.",
 ]
 
-logging.basicConfig(
-    level=SETTINGS.log_level,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-log = logging.getLogger("aisen.search")
+log = configure_logging("aisen.search")
+
+LAST_INGEST_PATH = Path(SETTINGS.ingest_json_path).parent / "last_ingest.json"
+
+
+def _last_ingest() -> dict | None:
+    """Read the summary the ingestion CLI wrote, if it is reachable.
+
+    The container mounts `./data`, so this is the same file `ingest.py` wrote on
+    the host. A missing file just means "no ingest recorded yet".
+    """
+    try:
+        return json.loads(LAST_INGEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _uptime_seconds(target_app: FastAPI) -> float | None:
+    started = getattr(target_app.state, "started_at", None)
+    return None if started is None else round(time.monotonic() - started, 1)
+
+
+def _log_configuration() -> None:
+    log.info(
+        "config: model=%s collection=%s db=%s n_results=%d threshold=%.2f "
+        "llm_timeout=%ss log_level=%s log_format=%s",
+        SETTINGS.model_name,
+        SETTINGS.collection_name,
+        SETTINGS.db_path,
+        SETTINGS.n_results,
+        SETTINGS.threshold_default,
+        SETTINGS.llm_timeout_seconds,
+        SETTINGS.log_level,
+        SETTINGS.log_format,
+    )
 
 
 def _open_collection(target_app: FastAPI) -> None:
@@ -108,7 +144,7 @@ def _load_model(target_app: FastAPI) -> None:
 
     # Imported here so tests that inject a fake model never pay for the torch
     # import, and so uvicorn logs the DB check above before the slow step.
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransforme
 
     target_app.state.model = SentenceTransformer(SETTINGS.model_name)
     log.info("Embedding model ready.")
@@ -124,8 +160,10 @@ def _load_model(target_app: FastAPI) -> None:
         log.info("AI summaries enabled with Gemini model '%s'.", gemini_model)
 
 
-@asynccontextmanager
+@asynccontextmanage
 async def lifespan(app: FastAPI):
+    app.state.started_at = time.monotonic()
+    _log_configuration()
     _open_collection(app)
     _load_model(app)
     yield
@@ -134,7 +172,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Undip Research Semantic Search API",
     description="Semantic search over the harvested Undip eprints2 repository.",
-    version="0.2.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -145,6 +183,56 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Tag every request with an id and log one line per completed request.
+
+    The id is echoed back in `X-Request-ID` and appears in the 500 body, so a
+    user can quote one string that ties their report to this log.
+    """
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    started = time.perf_counter()
+
+    try:
+        response = await call_next(request)
+    except Exception:  # noqa: BLE001 - logged with the id, re-raised to the handle
+        log.exception(
+            "request failed request_id=%s %s %s",
+            request_id,
+            request.method,
+            request.url.path,
+        )
+        raise
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    log.info(
+        "request request_id=%s method=%s path=%s status=%d duration_ms=%.0f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Turn an unexpected error into a JSON 500 that carries the request id."""
+    request_id = getattr(request.state, "request_id", "-")
+    log.exception("unhandled error request_id=%s", request_id, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Terjadi kesalahan internal. Coba lagi.",
+            "request_id": request_id,
+        },
+        headers={"X-Request-ID": request_id},
+    )
 
 
 class SearchRequest(BaseModel):
@@ -167,16 +255,16 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     peringkat: int  # 1-based position after threshold filtering
-    skor: float  # similarity, higher = closer
-    judul: str
-    penulis: str
-    deskripsi: str
-    url: str
-    date: str
+    skor: float  # similarity, higher = close
+    judul: st
+    penulis: st
+    deskripsi: st
+    url: st
+    date: st
 
 
 class SearchResponse(BaseModel):
-    query: str
+    query: st
     threshold: float
     count: int
     results: list[SearchResult]
@@ -286,20 +374,76 @@ def summarize_with_llm(query: str, results: list[SearchResult]) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness probe plus the facts needed to sanity-check a demo before running it.
+    """Liveness probe: is the process up and serving HTTP?
 
-    `llm_configured` avoids having to hit /search to see whether Gemini is set
-    up; `metric` must be `cosine`, otherwise `skor` in /search is not a
-    similarity at all.
+    Deliberately does no database work, so the Compose healthcheck cannot put a
+    `COUNT` over 48k rows on a 30-second timer, and a broken index never causes
+    a restart loop. Use `/ready` for "can it actually answer searches?".
     """
     return {
         "status": "ok",
-        "documents": app.state.collection.count(),
+        "version": APP_VERSION,
+        "uptime_s": _uptime_seconds(app),
+    }
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness probe: is there a usable index behind this process?
+
+    Returns 503 with a `problems` list when the collection is missing, empty,
+    not cosine, or built with a different model. `last_ingest` is the summary
+    the CLI wrote, so "the last ingest failed" is visible without reading logs.
+    """
+    problems: list[str] = []
+    documents = 0
+    metadata: dict = {}
+
+    try:
+        collection = app.state.collection
+        documents = collection.count()
+        metadata = collection.metadata or {}
+    except Exception as exc:  # noqa: BLE001 - readiness must report, not raise
+        problems.append(f"collection unavailable: {exc}")
+
+    if not problems:
+        if documents == 0:
+            problems.append(
+                "collection is empty: run `python ingest.py --all` (or the tools "
+                "profile) before serving searches"
+            )
+        if metadata.get("hnsw:space") != "cosine":
+            problems.append(
+                "collection does not use hnsw:space=cosine: similarity scores "
+                "are meaningless"
+            )
+        recorded_model = metadata.get("embedding_model")
+        if recorded_model and recorded_model != SETTINGS.model_name:
+            problems.append(
+                f"collection was built with model '{recorded_model}' but "
+                f"EMBEDDING_MODEL is '{SETTINGS.model_name}': re-run ingest.py --index"
+            )
+
+    last_ingest = _last_ingest()
+    if last_ingest and last_ingest.get("status") == "failed":
+        problems.append(
+            f"last ingest failed: {last_ingest.get('error') or 'unknown error'}"
+        )
+
+    payload = {
+        "status": "ok" if not problems else "not_ready",
+        "documents": documents,
+        "metric": metadata.get("hnsw:space"),
+        "model": SETTINGS.model_name,
+        "version": APP_VERSION,
+        "uptime_s": _uptime_seconds(app),
         "llm_configured": bool(
             os.getenv("GEMINI_API_KEY") and os.getenv("GEMINI_MODEL")
         ),
-        "metric": (app.state.collection.metadata or {}).get("hnsw:space"),
+        "last_ingest": last_ingest,
+        "problems": problems,
     }
+    return JSONResponse(status_code=200 if not problems else 503, content=payload)
 
 
 def metadata_text(metadata: dict | None, key: str) -> str:
@@ -376,7 +520,7 @@ async def _summarize(query: str, results: list[SearchResult]) -> str:
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(payload: SearchRequest) -> SearchResponse:
+async def search(payload: SearchRequest, request: Request) -> SearchResponse:
     started = time.perf_counter()
 
     embedding = await run_in_threadpool(app.state.model.encode, payload.query)
@@ -408,7 +552,8 @@ async def search(payload: SearchRequest) -> SearchResponse:
             ringkasan_error = str(exc)
 
     log.info(
-        "search status=%s count=%d threshold=%.2f duration_ms=%.0f",
+        "search request_id=%s status=%s count=%d threshold=%.2f duration_ms=%.0f",
+        getattr(request.state, "request_id", "-"),
         status,
         len(results),
         payload.threshold,

@@ -21,7 +21,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py settings.py docker-entrypoint.sh ./
+COPY app.py settings.py logging_setup.py watch.py docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
 # `ingest.py` is not copied by default: the image only serves

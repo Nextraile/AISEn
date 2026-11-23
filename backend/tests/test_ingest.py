@@ -187,6 +187,109 @@ def test_build_index_rejects_empty_json(tmp_path):
         ingest.build_index(json_path=json_path, model=FakeModel(), client=FakeClient())
 
 
+class CountingModel(FakeModel):
+    def __init__(self):
+        self.calls = []
+
+    def encode(self, documents, batch_size=64, show_progress_bar=False):
+        self.calls.append(list(documents))
+        return FakeEmbeddings([[1.0, 0.0] for _ in documents])
+
+
+def test_encode_in_chunks_makes_one_call_per_chunk(tmp_path):
+    # A single silent `encode` over 48k abstracts is the hang-looking phase this
+    # logging exists to expose; chunking must actually split the calls.
+    data = [
+        f"document {i}" for i in range(5)
+    ]
+    model = CountingModel()
+
+    vectors = ingest._encode_in_chunks(model, data, chunk_size=2)
+
+    assert len(vectors) == 5
+    assert [len(call) for call in model.calls] == [2, 2, 1]
+
+
+def test_harvest_accepts_a_custom_progress_every(tmp_path):
+    records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(5)]
+    items = ingest.harvest(
+        target=10,
+        output=tmp_path / "clean.json",
+        records=records,
+        progress_every=2,
+    )
+    assert len(items) == 5
+
+
+def test_ingest_lock_refuses_a_second_writer(tmp_path):
+    pytest.importorskip("fcntl")
+    lock = tmp_path / ".ingest.lock"
+
+    with ingest.ingest_lock(lock):
+        with pytest.raises(ingest.IngestLocked, match="already running"):
+            with ingest.ingest_lock(lock):
+                pass
+
+    # Released: a later run can take the lock again.
+    with ingest.ingest_lock(lock):
+        pass
+
+
+def test_run_summary_records_outcome(tmp_path, monkeypatch):
+    import dataclasses
+
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS, ingest_json_path=str(tmp_path / "d.json")
+        ),
+    )
+    ingest._write_run_summary(
+        status="failed",
+        stage="index",
+        started_at="2026-01-01T00:00:00+00:00",
+        duration_s=12.5,
+        counts={"records": 5, "documents": 3},
+        error="TypeError: boom",
+    )
+    payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["records_harvested"] == 5
+    assert payload["documents_indexed"] == 3
+    assert payload["error"] == "TypeError: boom"
+
+
+def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, caplog):
+    # The incident this guards: a traceback scrolls past and a --rm container
+    # takes the only copy with it, so nothing says the run failed.
+    import dataclasses
+
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS, ingest_json_path=str(tmp_path / "d.json")
+        ),
+    )
+
+    def boom(**kwargs):
+        raise TypeError("sequence item 1: expected str instance, NoneType found")
+
+    monkeypatch.setattr(ingest, "harvest", boom)
+
+    with caplog.at_level("ERROR"):
+        code = ingest.main(["--harvest"])
+
+    assert code == 1
+    assert "INGEST FAILED in stage 'harvest'" in caplog.text
+
+    payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["stage"] == "harvest"
+    assert payload["error"].startswith("TypeError: sequence item 1")
+
+
 # ---------- query demo ----------
 class FakeQueryCollection:
     def query(self, query_embeddings, n_results, include):
