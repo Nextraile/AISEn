@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-import ingest
+from ingestion import ingest
 
 
 class FakeRecord:
@@ -322,7 +322,7 @@ def test_query_demo_can_be_empty():
 def test_query_demo_matches_api_ranking():
     # The demo must report exactly what POST /search would return, so both go
     # through the same `app.rank_results` helper.
-    from app import rank_results
+    from service.app import rank_results
 
     raw = FakeQueryCollection().query([], n_results=3, include=[])
     expected = [

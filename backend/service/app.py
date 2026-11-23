@@ -25,8 +25,8 @@ from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 from starlette.concurrency import run_in_threadpool
 
-from logging_setup import configure_logging
-from settings import SETTINGS
+from common.logging_setup import configure_logging
+from common.config import SETTINGS
 
 # Threshold bounds are captured by `SearchRequest` when the class is created,
 # so they must be module-level names rather than read from `SETTINGS` inline.
@@ -49,7 +49,7 @@ LAST_INGEST_PATH = Path(SETTINGS.ingest_json_path).parent / "last_ingest.json"
 def _last_ingest() -> dict | None:
     """Read the summary the ingestion CLI wrote, if it is reachable.
 
-    The container mounts `./data`, so this is the same file `ingest.py` wrote on
+    The container mounts `./data`, so this is the same file `ingestion/ingest.py` wrote on
     the host. A missing file just means "no ingest recorded yet".
     """
     try:
@@ -93,7 +93,7 @@ def _open_collection(target_app: FastAPI) -> None:
         raise RuntimeError(
             f"ChromaDB collection '{SETTINGS.collection_name}' was not found in "
             f"'{SETTINGS.db_path}'. Check CHROMA_DB_PATH and run "
-            "`python ingest.py --all` first."
+            "`python -m ingestion.ingest --all` first."
         ) from exc
 
     collection = target_app.state.collection
@@ -108,8 +108,8 @@ def _open_collection(target_app: FastAPI) -> None:
         log.warning(
             "Collection '%s' is EMPTY: every search will return 'no_results' "
             "even though the startup checks pass. Build the index with "
-            "`python ingest.py --all` on the host, or from Docker with "
-            "`docker compose --profile tools run --rm tools ingest.py --all`.",
+            "`python -m ingestion.ingest --all` on the host, or from Docker with "
+            "`docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all`.",
             SETTINGS.collection_name,
         )
 
@@ -122,13 +122,13 @@ def _open_collection(target_app: FastAPI) -> None:
         )
 
     # Stored vectors and query vectors must come from the same model. Changing
-    # EMBEDDING_MODEL without `ingest.py --index` still returns results, but the
+    # EMBEDDING_MODEL without re-indexing still returns results, but the
     # scores are computed in two different spaces.
     recorded_model = metadata.get("embedding_model")
     if recorded_model and recorded_model != SETTINGS.model_name:
         log.warning(
             "Collection '%s' was built with model '%s' but EMBEDDING_MODEL is "
-            "now '%s'. Re-run `python ingest.py --index`.",
+            "now '%s'. Re-run `python -m ingestion.ingest --index`.",
             SETTINGS.collection_name,
             recorded_model,
             SETTINGS.model_name,
@@ -409,7 +409,7 @@ def ready() -> JSONResponse:
     if not problems:
         if documents == 0:
             problems.append(
-                "collection is empty: run `python ingest.py --all` (or the tools "
+                "collection is empty: run `python -m ingestion.ingest --all` (or the tools "
                 "profile) before serving searches"
             )
         if metadata.get("hnsw:space") != "cosine":
@@ -421,7 +421,7 @@ def ready() -> JSONResponse:
         if recorded_model and recorded_model != SETTINGS.model_name:
             problems.append(
                 f"collection was built with model '{recorded_model}' but "
-                f"EMBEDDING_MODEL is '{SETTINGS.model_name}': re-run ingest.py --index"
+                f"EMBEDDING_MODEL is '{SETTINGS.model_name}': re-run 'python -m ingestion.ingest --index'"
             )
 
     last_ingest = _last_ingest()
@@ -449,7 +449,7 @@ def ready() -> JSONResponse:
 def metadata_text(metadata: dict | None, key: str) -> str:
     """Read one metadata field as a string, never raising.
 
-    The metadata shape belongs to `ingest.py`; a single document missing a key,
+    The metadata shape belongs to `ingestion/ingest.py`; a single document missing a key,
     or carrying a non-string value, must not turn the whole search into a 500.
     """
     if not metadata:  # None or {} (document stored without metadata)

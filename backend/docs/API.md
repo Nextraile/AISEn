@@ -1,7 +1,7 @@
 # API Reference
 
 Complete contract for the Undip Research Semantic Search API. Every field,
-status, and error below matches `app.py` (app version `0.3.0`).
+status, and error below matches `service/app.py` (app version `0.3.0`).
 
 - Base URL (local): `http://localhost:8000`
 - Content type: `application/json` for requests and responses
@@ -257,7 +257,7 @@ when the corpus has nothing relevant.
   "skor_tertinggi": null,
   "arahan": [
     "Belum ada dokumen terindeks di basis data.",
-    "Jalankan python ingest.py --all untuk mengisi basis data."
+    "Jalankan python -m ingestion.ingest --all untuk mengisi basis data."
   ]
 }
 ```
@@ -379,7 +379,7 @@ The `503` cases, all reported in `problems`:
 - `documents: 0` → ingestion never ran; every search will be `no_results`.
 - `metric` not `"cosine"` → stored vectors were built with a different distance
   function; `skor` is not a similarity and the 0.1–0.9 threshold is meaningless.
-- collection model differs from `EMBEDDING_MODEL` → re-run `ingest.py --index`.
+- collection model differs from `EMBEDDING_MODEL` → re-run `python -m ingestion.ingest --index`.
 - `last_ingest.status == "failed"` → the most recent run aborted; the `error`
   field says why.
 
@@ -452,7 +452,7 @@ Useful for frontend clients written against an earlier build.
 | LLM timeout | 20 s → 8 s | 15 s (measured: real calls run 1–7 s with a tail past 8 s) |
 | Default threshold | `0.5` (a guess) | `0.53`, then `0.60` once measured on the full 47,913-record corpus (noise ≤ 0.559, relevant phrases ≥ 0.74) |
 | `no_results` guidance | "Kemiripan tertinggi …; turunkan threshold di bawah nilai itu." | reports the threshold and best score, no instruction to lower it — an empty result is valid |
-| Ingestion | notebook run by hand | `python ingest.py --all` (same harvest, JSON, and Chroma build) |
+| Ingestion | notebook run by hand | `python -m ingestion.ingest --all` (same harvest, JSON, and Chroma build) |
 
 See [DEMO.md](DEMO.md) for the operational checklist and [DATA.md](DATA.md) for
 how the collection must be built for these scores to mean anything.

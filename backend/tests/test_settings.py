@@ -1,6 +1,6 @@
 import pytest
 
-from settings import Settings
+from common.config import Settings
 
 
 # ---------- defaults ----------

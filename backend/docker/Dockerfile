@@ -21,15 +21,17 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py settings.py logging_setup.py watch.py docker-entrypoint.sh ./
+COPY common/ ./common/
+COPY service/ ./service/
+COPY docker/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x docker-entrypoint.sh
 
-# `ingest.py` is not copied by default: the image only serves
-# To (re)build the index, run `python ingest.py --all` on the host — compose bind-mounts ./data/vector_db 
-# Build with INGEST=1 (the `tools` profile) to include it
-COPY ingest.py* /tmp/ingest-src/
-RUN if [ "$INGEST" = "1" ]; then mv /tmp/ingest-src/ingest.py /app/ingest.py; fi \
-    && rm -rf /tmp/ingest-src
+# `ingestion/` is not copied by default: the image only serves. To (re)build the
+# index, run `python -m ingestion.ingest --all` on the host, or use the `tools`
+# profile below, which mounts the whole backend directory.
+COPY ingestion/ /tmp/ingestion-src/
+RUN if [ "$INGEST" = "1" ]; then mv /tmp/ingestion-src /app/ingestion; fi \
+    && rm -rf /tmp/ingestion-src
 
 RUN mkdir -p /app/data/vector_db /model-cache \
     && useradd --create-home --uid ${APP_UID} app \
@@ -41,4 +43,4 @@ EXPOSE 8000
 
 # Guard first: explains a UID/permission mismatch in plain words
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"]

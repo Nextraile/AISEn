@@ -7,7 +7,8 @@ research published at Universitas Diponegoro. Two self-contained services:
 
 ```
 backend/          FastAPI + ChromaDB: embedding, search, Gemini summary, ingestion
-                  Dockerfile, docker-compose.yml (project `aisen`, container `aisen-api`)
+                  code in common/ service/ ingestion/, container files in docker/
+                  (project `aisen`, container `aisen-api`)
 frontend/         React 19 + TypeScript + Vite UI (Tailwind 4)
                   Dockerfile, nginx.conf.template, docker-compose.yml (container `aisen-web`)
 README.md         monorepo overview and quick start
@@ -23,17 +24,18 @@ a plain Vite app, so the rules below apply as-is.
 
 Each service assumes its own directory as the working directory.
 
-Backend — `settings.py` (generated: `./data/vector_db`, `data/documents.json`),
+Backend — `common/config.py` (generated: `./data/vector_db`, `data/documents.json`),
 `pyproject.toml` (`pythonpath = ["."], testpaths = ["tests"]`), and
-`--env-file .env` are all relative to `backend/`:
+`--env-file .env` are all relative to `backend/`. Compose lives in `backend/docker/`,
+so it must be named with `-f` and its paths are relative to that directory:
 
 ```bash
 cd backend
 pip install -r requirements.txt
-python ingest.py --all                     # only when data/vector_db/ is missing
-uvicorn app:app --reload --port 8000 --env-file .env
+python -m ingestion.ingest --all                     # only when data/vector_db/ is missing
+uvicorn service.app:app --reload --port 8000 --env-file .env
 pytest
-APP_UID=$(id -u) docker compose up -d --build --wait
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait
 ```
 
 Frontend:
@@ -51,17 +53,17 @@ Docker — the same Compose project (`aisen`) for both, so `aisen-web` reaches
 
 ```bash
 cd backend
-APP_UID=$(id -u) docker compose --profile tools run --rm tools ingest.py --all
-APP_UID=$(id -u) docker compose up -d --build --wait      # API on :8000
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait      # API on :8000
 
 cd ../frontend
 docker compose up -d --build --wait                       # UI on :3000
 ```
 
-`ingest.py` is only in the `tools`-profile image (`INGEST=1`); the serving image
+`ingestion/ingest.py` is only in the `tools`-profile image (`INGEST=1`); the serving image
 does not contain it.
 
-Backend commands fail from the monorepo root: `app.py` will not be
+Backend commands fail from the monorepo root: `service/app.py` will not be
 importable and the vector DB will not be found. npm commands fail from the root
 because there is no root `package.json`, and fail from the UNC path
 `\\wsl.localhost\...` — run them inside WSL, or use Docker.

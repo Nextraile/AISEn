@@ -47,7 +47,7 @@ defaults in `src/app/config.ts`, which match `.env.example`.
 Vite replaces `import.meta.env.VITE_*` with string literals during `vite build`,
 so changing any `VITE_*` value requires a **rebuild**, not a restart. Compose
 passes them as build args, and `frontend/.env` is excluded from the build context
-by `.dockerignore` — the committed `.env` is for the dev server only.
+by `.dockerignore` — the local `.env` is for the dev server only.
 
 | Variable | Dev default | Docker default | Meaning |
 |---|---|---|---|

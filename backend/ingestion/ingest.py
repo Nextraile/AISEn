@@ -3,15 +3,15 @@
 Harvests OAI-PMH records from the Undip eprints repository, writes a clean
 JSON file, and builds the Chroma collection the API serves.
 
-Run from `backend/` so the relative paths and the `app` import resolve:
+Run from `backend/` so the relative paths and the package imports resolve:
 
-    python ingest.py --all
-    python ingest.py --harvest --target 1000
-    python ingest.py --index
-    python ingest.py --query "analisis kualitas air sungai"
+    python -m ingestion.ingest --all
+    python -m ingestion.ingest --harvest --target 1000
+    python -m ingestion.ingest --index
+    python -m ingestion.ingest --query "analisis kualitas air sungai"
 
-The API and this script read the same `Settings` object (see `settings.py`), so
-stored vectors and query vectors cannot drift apart on the model, the database
+The API and this script read the same `Settings` object (see `common/config.py`),
+so stored vectors and query vectors cannot drift apart on the model, the database
 path, or the collection name. Environment defaults are listed in `.env.example`;
 the CLI flags below still win over them.
 """
@@ -31,9 +31,9 @@ from typing import Iterable, Iterator, Sequence
 
 import chromadb
 
-from app import rank_results
-from logging_setup import configure_logging
-from settings import SETTINGS
+from service.app import rank_results
+from common.logging_setup import configure_logging
+from common.config import SETTINGS
 
 log = logging.getLogger("aisen.ingest")
 

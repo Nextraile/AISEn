@@ -54,8 +54,8 @@ The service never fails a search because the LLM failed: the worst case is
 ```bash
 cp .env.example .env                      # fill in both Gemini values
 pip install -r requirements.txt
-python ingest.py --all                    # only if data/vector_db/ is missing
-uvicorn app:app --reload --port 8000 --env-file .env
+python -m ingestion.ingest --all                    # only if data/vector_db/ is missing
+uvicorn service.app:app --reload --port 8000 --env-file .env
 ```
 
 `--env-file` is required locally: the app reads plain environment variables and
@@ -84,10 +84,10 @@ schema is at `/openapi.json`.
 
 ```bash
 cp .env.example .env   # docker compose fails without this file
-APP_UID=$(id -u) docker compose up -d --build --wait
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait
 ```
 
-This builds and serves `app.py` on <http://localhost:8000>, and returns only once
+This builds and serves `service/app.py` on <http://localhost:8000>, and returns only once
 the container is healthy. Override the published port with `API_PORT` (Compose
 maps `${API_PORT:-8000}:8000`) and the first-start grace period with
 `HEALTH_START_PERIOD` (default `120s`).
@@ -100,16 +100,17 @@ and without publishing the API port to the browser's machine.
 
 `APP_UID` makes the container run as your own user, so it can write the
 bind-mounted `./data/vector_db`. On PowerShell:
-`$env:APP_UID=1000; docker compose up -d --build --wait`.
+`$env:APP_UID=1000; docker compose -f docker/docker-compose.yml up -d --build --wait`.
 
 If the UID does not match, `docker-entrypoint.sh` stops the container before
 ChromaDB is opened and prints the owner UID, the container UID, and the exact
 command to fix it — instead of the raw `attempt to write a readonly database`
-traceback. The default is `10001`, so a plain `docker compose up` always starts
+traceback. The default is `10001`, so a plain `docker compose -f
+  docker/docker-compose.yml up` always starts
 the guard path rather than depending on the host UID.
 
 The collection has to exist before the server starts: build it on the host with
-`python ingest.py --all`, or use the Docker-only path below.
+`python -m ingestion.ingest --all`, or use the Docker-only path below.
 
 The embedding model is cached in the `model_cache` volume, prefixed with the
 Compose project name (`aisen_model_cache`). Renaming the project starts from an
@@ -118,27 +119,27 @@ that volume owned by the previous user; either hand it to the new one, which
 keeps the download —
 
 ```bash
-docker compose down
+docker compose -f docker/docker-compose.yml down
 docker run --rm -v aisen_model_cache:/model-cache busybox chown -R "$(id -u):$(id -g)" /model-cache
 ```
 
 — or delete it with `docker volume rm aisen_model_cache` (equivalently
-`docker compose down -v`) and pay the download again.
+`docker compose -f docker/docker-compose.yml down -v`) and pay the download again.
 
 ### Ingesting without installing Python on the host
 
-The serving image does not contain `ingest.py`. A second Compose service,
+The serving image does not contain `ingestion/ingest.py`. A second Compose service,
 `tools`, builds the same Dockerfile with `INGEST=1` — so the heavy torch layer is
 reused rather than downloaded twice — and runs the script with the repository
 mounted:
 
 ```bash
-docker compose --profile tools run --rm tools ingest.py --all
-docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
+docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "analisis kualitas air sungai"
 ```
 
 `--profile tools` is needed because the service is hidden by default, so a plain
-`docker compose up` still starts only the API. This is the Docker-only path: no
+`docker compose ... up` still starts only the API. This is the Docker-only path: no
 `pip install`, and `--query` uses the same `rank_results()` as `POST /search`,
 so its scores match the API exactly.
 
@@ -213,7 +214,7 @@ response, so both names always agree.
 It is a relevance gate, not a knob for "make sure something comes back". An
 empty result is a valid answer.
 
-The default (`0.60`, `THRESHOLD_DEFAULT` in `settings.py`) was measured on the
+The default (`0.60`, `THRESHOLD_DEFAULT` in `common/config.py`) was measured on the
 **full 47,913-record collection**, not guessed and not inherited from the old
 1,000-record sample. The method: score phrasal queries that should match and
 off-topic queries that should not, then place the threshold in the gap **only if
@@ -251,7 +252,7 @@ of lowering the bar — and accept an empty list when the corpus genuinely has
 nothing.
 
 If you change the corpus, the model, or the ingestion code, **re-measure before
-trusting the constant**: run `python ingest.py --query "<phrase>" --min-similarity 0`
+trusting the constant**: run `python -m ingestion.ingest --query "<phrase>" --min-similarity 0`
 for a few relevant and off-topic phrases and compare the reported similarities.
 If the bands overlap, fix retrieval rather than inventing a threshold.
 
@@ -265,7 +266,7 @@ hang:
   (`encode: 25000/47915 (52%) 19.3 docs/s eta 19m`). Each stage is timed, and
   the run ends with `ingest complete in 41m12s: records=47915, documents=47915`
   or `INGEST FAILED after …: TypeError: …`.
-- **One writer.** `ingest.py` takes an `flock` on `data/.ingest.lock`; a second
+- **One writer.** `ingestion/ingest.py` takes an `flock` on `data/.ingest.lock`; a second
   run exits immediately with `another ingest is already running (pid …)`
   instead of interleaving a delete with the other run's inserts.
 - **Persisted outcome.** Every run writes `data/last_ingest.json` (status, stage,
@@ -288,25 +289,39 @@ that decide whether searches can work.
 
 ## Project structure
 
+Modules are grouped by role. Imports are top-level (`from common.config import
+SETTINGS`), so every command runs from `backend/`.
+
 ```
-app.py                     the service: lifespan, schemas, /search, /health, /ready, Gemini
-settings.py                every configurable value, read once from the environment
-logging_setup.py           text/json/file logging shared by the API and ingest.py
-ingest.py                  the only ingestion path: OAI-PMH -> JSON -> embeddings -> Chroma
-watch.py                   /ready poller that logs state changes and optionally alerts
+common/
+  config.py                every configurable value, read once from the environment
+  logging_setup.py         text/json/file logging shared by the API and the ingester
+service/
+  app.py                   the service: lifespan, schemas, /search, /health, /ready, Gemini
+  watch.py                 /ready poller that logs state changes and optionally alerts
+ingestion/
+  ingest.py                the only ingestion path: OAI-PMH -> JSON -> embeddings -> Chroma
+docker/
+  Dockerfile               CPU-only image, non-root user, INGEST arg for the tools image
+  docker-compose.yml       aisen-api, `watch` service, `tools` ingest profile, model cache
+  docker-entrypoint.sh     UID/writability guard, checked before the server starts
+  .dockerignore            keeps .env, data/, and caches out of the build context
 data/                      generated and git-ignored, except .gitkeep which keeps
                            the directory itself tracked (Docker would create a
                            missing bind-mount source as root)
-tests/test_app.py          API tests; fake model and fake collection, no downloads
-tests/test_ingest.py       ingestion tests; fake records, model, and Chroma client
-tests/test_settings.py     config parsing and validation
-docs/API.md                API reference
-docs/DATA.md               ingestion pipeline and metadata contract
-docs/DEMO.md               pre-meeting checklist and demo runbook
+tests/                     test_app.py, test_ingest.py, test_settings.py
+                           fake model and fake collection, so no download is needed
+docs/                      API.md, DATA.md, DEMO.md
+pyproject.toml             pytest configuration (pythonpath, testpaths)
 .env.example               full configuration inventory
-Dockerfile                 CPU-only image, non-root user, INGEST arg for the tools image
-docker-entrypoint.sh       UID/writability guard, checked before the server starts
-docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest profile, model cache
+```
+
+Compose lives in `docker/`, so its paths are relative to that directory and the
+file has to be named when running a command:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build --wait
+docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 ```
 
 ## Troubleshooting
@@ -316,17 +331,17 @@ docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest pr
 | `RuntimeError: ChromaDB collection 'undip_research_search' was not found` | Database missing, or uvicorn started from the wrong directory | Build the DB ([docs/DATA.md](docs/DATA.md)) and run from `backend/` |
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
-| `/ready` shows `"documents": 0` | Empty collection | Run `python ingest.py --all` |
+| `/ready` shows `"documents": 0` | Empty collection | Run `python -m ingestion.ingest --all` |
 | `docker compose up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
-| `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python ingest.py --index`; scores are meaningless otherwise |
-| `/ready` lists `last ingest failed: …` | The most recent `ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
+| `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python -m ingestion.ingest --index`; scores are meaningless otherwise |
+| `/ready` lists `last ingest failed: …` | The most recent `ingestion/ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
 | `status=list_only`, message about quota | Gemini 429 / rate limit | Wait, or raise the quota |
 | `status=list_only`, message "Model LLM '...' tidak ditemukan" | Wrong `GEMINI_MODEL` | Use a currently available model name |
 | `status=list_only`, message "tidak merespons tepat waktu" | Gemini was slower than 15 s | Retry; if it happens often, check quota and network |
 | `status=no_results` on a one-word query | Short queries score much lower than phrases (one word `stunting` 0.53 vs 0.74–0.84 for phrases) | Ask in a phrase with more context; do not lower the threshold just to fill the list |
-| `status=no_results` every time | Threshold too strict, or the corpus genuinely has no match | Score a phrase with `python ingest.py --query "<phrase>"`; if nothing is close, the retrieval is the problem, not the threshold |
-| `status=no_results`, `arahan` says "Belum ada dokumen" | Collection is empty | Run `python ingest.py --all` |
+| `status=no_results` every time | Threshold too strict, or the corpus genuinely has no match | Score a phrase with `python -m ingestion.ingest --query "<phrase>"`; if nothing is close, the retrieval is the problem, not the threshold |
+| `status=no_results`, `arahan` says "Belum ada dokumen" | Collection is empty | Run `python -m ingestion.ingest --all` |
 | `docker compose logs -f` shows an old traceback after a successful restart | `-f` replays the whole history, including the previous failed attempt | Use `docker compose logs --tail 40 aisen-api`, and confirm with `docker inspect aisen-api --format '{{.State.Health.Status}}'` |
 | `422 Unprocessable Content` | Empty/whitespace `query`, or `threshold` outside 0.1–0.9 | Fix the request body |
 | Browser CORS error | Should not happen (`allow_origins=["*"]`) | Confirm the response carries `access-control-allow-origin: *` |
@@ -347,7 +362,7 @@ docker-compose.yml         aisen-api, the `watch` service, the `tools` ingest pr
   [Why the default is 0.60](#why-the-default-is-060).
 - **No authentication or rate limiting.** Anyone who can reach the port can spend
   Gemini quota.
-- **No incremental ingestion.** Re-running `ingest.py --index` deletes and
+- **No incremental ingestion.** Re-running `python -m ingestion.ingest --index` deletes and
   recreates the collection.
 - **One process, one worker.** The model is loaded once per process.
 - **No CI, linter, or lockfile.** Dependencies are range-pinned only.

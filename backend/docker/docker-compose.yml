@@ -3,7 +3,8 @@ name: aisen
 services:
   aisen-api:
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         # Match the host UID so the bind-mounted ./data/vector_db is writable by the container
         # Linux/WSL: APP_UID=$(id -u) docker compose up
@@ -11,7 +12,7 @@ services:
 
         APP_UID: ${APP_UID:-10001}
     container_name: aisen-api
-    env_file: .env
+    env_file: ../.env
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -20,7 +21,7 @@ services:
       # Docker creates this as root if it is missing, which the container (UID
       # APP_UID) then cannot write. `docker-entrypoint.sh` detects that and says
       # so; create the directory as your own user before the first `up`.
-      - ./data:/app/data
+      - ../data:/app/data
       - model_cache:/model-cache
     restart: unless-stopped
     logging:
@@ -40,29 +41,30 @@ services:
       # first model load can take ~70 seconds, and longer if EMBEDDING_MODEL is changed to a larger model.
       start_period: ${HEALTH_START_PERIOD:-120s}
 
-  # Ingestion CLI: the same image with ingest.py included (INGEST=1), so the
+  # Ingestion CLI: the same image with the ingestion package (INGEST=1), so the
   # cached torch layer is reused instead of downloaded again. The whole backend
   # directory is mounted because the script writes ./data/documents.json as well
   # as ./data/vector_db.
   #
-  #   docker compose --profile tools run --rm tools ingest.py --all
-  #   docker compose --profile tools run --rm tools ingest.py --query "..."
+  #   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+  #   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "..."
   tools:
     profiles: ["tools"]
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         APP_UID: ${APP_UID:-10001}
         INGEST: "1"
-    env_file: .env
+    env_file: ../.env
     volumes:
       # The whole backend directory, so harvest output and the DB land on the
-      # host. `ingest.py --query` therefore needs no extra mount.
-      - .:/app
+      # host. `--query` therefore needs no extra mount.
+      - ..:/app
       - model_cache:/model-cache
-    # `python ingest.py ...` instead of uvicorn; the file-writability guard is
+    # `python -m ingestion.ingest ...` instead of uvicorn; the writability guard is
     # for the server, and here the mount is meant to be written.
-    entrypoint: ["python"]
+    entrypoint: ["python", "-m", "ingestion.ingest"]
     logging:
       driver: json-file
       options:
@@ -74,17 +76,18 @@ services:
   # receive a message on Discord or any generic webhook.
   watch:
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         APP_UID: ${APP_UID:-10001}
-        # The serving image omits ingest.py; watch.py is a stdlib script, so
+        # The serving image omits ingestion/; service/watch.py is stdlib-only, so
         # this reuses the same image rather than adding a dependency.
         INGEST: "0"
-    env_file: .env
+    env_file: ../.env
     environment:
       WATCH_URL: http://aisen-api:8000/ready
-    # `python watch.py` instead of uvicorn; interval and timeout come from .env
-    entrypoint: ["python", "watch.py"]
+    # `python -m service.watch` instead of uvicorn; interval/timeout come from .env
+    entrypoint: ["python", "-m", "service.watch"]
     depends_on:
       - aisen-api
     restart: unless-stopped

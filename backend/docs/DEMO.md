@@ -14,7 +14,7 @@ when something does not cooperate. Written for the prototype as it exists today.
   from**. If you built it on another machine, copy the whole directory.
 - [ ] Start the app once so the embedding model downloads:
   ```bash
-  uvicorn app:app --reload --port 8000 --env-file .env
+  uvicorn service.app:app --reload --port 8000 --env-file .env
   ```
   `--env-file` is what actually feeds `GEMINI_API_KEY` / `GEMINI_MODEL` to a local
   run — without it the API quietly degrades to `list_only`.
@@ -24,16 +24,16 @@ when something does not cooperate. Written for the prototype as it exists today.
 - [ ] If you demo via Docker, build with your own UID so the bind-mounted DB is
   writable:
   ```bash
-  APP_UID=$(id -u) docker compose up -d --build --wait
+  APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait
   ```
   Without `APP_UID` the container runs as UID 10001 and the entrypoint stops
   with the owner UID and the container UID. After changing it, hand the model
   cache to the new user instead of redownloading it:
   ```bash
-  docker compose down
+  docker compose -f docker/docker-compose.yml down
   docker run --rm -v aisen_model_cache:/model-cache busybox chown -R "$(id -u):$(id -g)" /model-cache
   ```
-  (`docker compose down -v` also unblocks it, but pays the ~470 MB download.)
+  (`docker compose -f docker/docker-compose.yml down -v` also unblocks it, but pays the ~470 MB download.)
 - [ ] If the audience sees the UI rather than Swagger, start it from `frontend/`
   and confirm the nginx proxy reaches the API:
   ```bash
@@ -46,11 +46,11 @@ when something does not cooperate. Written for the prototype as it exists today.
   nginx proxies it to `aisen-api:8000` on the shared `aisen_default` network.
 - [ ] Sanity-check the relevance gate (there is no separate calibration script):
   ```bash
-  python ingest.py --query "analisis kualitas air sungai"
+  python -m ingestion.ingest --query "analisis kualitas air sungai"
   ```
   Without Python on the host, the `tools` profile runs the same script:
   ```bash
-  docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
+  docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "analisis kualitas air sungai"
   ```
 - [ ] Check every readiness fact in one call:
   ```bash
@@ -60,7 +60,7 @@ when something does not cooperate. Written for the prototype as it exists today.
   `"llm_configured": true`, `"metric": "cosine"`, and `"problems": []`.
 - [ ] Sanity-check the relevance gate (there is no separate calibration script):
   ```bash
-  python ingest.py --query "analisis kualitas air sungai"
+  python -m ingestion.ingest --query "analisis kualitas air sungai"
   ```
   Expect results around 0.66. Then try an off-topic phrase such as
   `resep rendang padang`; it should score about 0.46. If relevant and off-topic
@@ -79,7 +79,7 @@ when something does not cooperate. Written for the prototype as it exists today.
 
 - [ ] Start the server:
   ```bash
-  uvicorn app:app --port 8000 --env-file .env
+  uvicorn service.app:app --port 8000 --env-file .env
   ```
   Prefer this over `docker compose` — fewer moving parts and the model cache is
   already warm. If you are showing the UI, start it too, in another terminal:
@@ -141,7 +141,7 @@ Answers that are honest and short. Do not overclaim.
   relevant phrases put the best hit at 0.74–0.84, while off-topic queries top
   out at 0.559. `0.60` sits in that gap, so it keeps real matches and rejects
   noise. You can reproduce the scores with
-  `python ingest.py --query "<phrase>" --min-similarity 0`.
+  `python -m ingestion.ingest --query "<phrase>" --min-similarity 0`.
 - **Why did "stunting" return nothing?** One word is too vague: it scores 0.53,
   under the bar. Ask for `faktor risiko stunting pada balita` (0.74). An
   empty result is the intended behaviour when the corpus has nothing clear —

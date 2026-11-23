@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-from settings import SETTINGS
+from common.config import SETTINGS
 
 TEXT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"

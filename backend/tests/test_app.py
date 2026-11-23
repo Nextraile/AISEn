@@ -5,8 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from google.genai import errors as genai_errors
 
-import app
-from app import app as api
+from service import app
+from service.app import app as api
 
 
 class FakeModel:
@@ -83,7 +83,7 @@ def test_threshold_bounds_from_environment_are_used(monkeypatch):
     # actually reaches the request.
     import importlib
 
-    import settings
+    from common import config as settings
 
     monkeypatch.setenv("THRESHOLD_MIN", "0.4")
     monkeypatch.setenv("THRESHOLD_MAX", "0.5")
@@ -116,7 +116,7 @@ def test_n_results_from_environment_is_used(monkeypatch):
     # This is the order uvicorn/Compose use when the process really starts.
     import importlib
 
-    import settings
+    from common import config as settings
 
     monkeypatch.setenv("SEARCH_N_RESULTS", "7")
     try:
@@ -327,7 +327,7 @@ def test_llm_timeout(monkeypatch):
     # and a reload rather than by mutating the shared object.
     import importlib
 
-    import settings
+    from common import config as settings
 
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.05")
     try:
@@ -539,7 +539,7 @@ def test_unhandled_error_returns_request_id():
 def test_startup_fails_clearly_when_collection_missing(tmp_path, monkeypatch):
     import importlib
 
-    import settings
+    from common import config as settings
 
     monkeypatch.setenv("CHROMA_DB_PATH", str(tmp_path / "missing"))
     try:

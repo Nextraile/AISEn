@@ -1,11 +1,11 @@
 # Data Pipeline
 
 How the vector database gets built, and the contract the service depends on.
-Everything here happens in `ingest.py` — there is no other ingestion path.
+Everything here happens in `ingestion/ingest.py` — there is no other ingestion path.
 
 > The app reads `./data/vector_db` and refuses to start without it. That
 > directory and `data/documents.json` are git-ignored, so a fresh clone has
-> no data until you run `python ingest.py --all`.
+> no data until you run `python -m ingestion.ingest --all`.
 >
 > `data/` itself *is* tracked (an empty directory via `data/.gitkeep`). That
 > matters for Docker: a missing bind-mount source gets created as root, which
@@ -69,7 +69,7 @@ of the OAI feed, not a random or complete sample of Undip's repository.
 | Insert batch | 1,000 (Chroma rejects batches above ~5,461) |
 | Document IDs | `doc_0`, `doc_1`, … |
 
-**`ingest.py` deletes the collection first**, then recreates it. Re-running it
+**`ingestion/ingest.py` deletes the collection first**, then recreates it. Re-running it
 wipes every vector; there is no incremental update path. Stop the API server
 before re-ingesting so it is not querying a collection that is being replaced.
 
@@ -78,7 +78,7 @@ title plus the opening of the abstract — not the whole document.
 
 ## Metadata contract
 
-`ingest.py` owns the metadata shape; `app.py` reads it. Change both together.
+`ingestion/ingest.py` owns the metadata shape; `service/app.py` reads it. Change both together.
 
 | Chroma metadata key | Source | Returned as | Notes |
 |---|---|---|---|
@@ -98,7 +98,7 @@ a similarity. `/ready` reports the metric so this is checkable.
 2. From `backend/`, run the whole pipeline:
 
    ```bash
-   python ingest.py --all
+   python -m ingestion.ingest --all
    ```
 
    That harvests `eprints2` into `data/documents.json`, then deletes and
@@ -110,8 +110,8 @@ a similarity. `/ready` reports the metric so this is checkable.
    profile (the serving image does not contain it):
 
    ```bash
-   docker compose --profile tools run --rm tools ingest.py --all
-   docker compose --profile tools run --rm tools ingest.py --query "analisis kualitas air sungai"
+   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "analisis kualitas air sungai"
    ```
 
    Every setting has an environment default (see `../.env.example`), so a
@@ -129,7 +129,7 @@ a similarity. `/ready` reports the metric so this is checkable.
    `problems`, and `data/last_ingest.json` holds the stage, timings, counts, and
    error.
 
-4. Re-check the threshold on the new data with `python ingest.py --query "<phrase>"`
+4. Re-check the threshold on the new data with `python -m ingestion.ingest --query "<phrase>"`
    (see the measured table in the README). If relevant and off-topic scores no
    longer separate, fix retrieval; do not invent a threshold.
 
@@ -141,12 +141,12 @@ covers harvesting as well as serving.
 - The harvested JSON and the vector DB are both git-ignored. Rebuilding requires
   network access to the Undip OAI endpoint, which is outside this repository's
   control.
-- `ingest.py` and `app.py` both read the same `settings.SETTINGS` object, so
+- `ingestion/ingest.py` and `service/app.py` both read the same `common.config.SETTINGS` object, so
   ingestion and serving cannot drift onto a different model, database path, or
   collection name.
 - The collection stores the model it was built with in its metadata
   (`embedding_model`). Changing `EMBEDDING_MODEL` without re-running
-  `ingest.py --index` logs a warning at startup; the scores would otherwise be
+  `python -m ingestion.ingest --index` logs a warning at startup; the scores would otherwise be
   meaningless without any error.
 - The embedding model is referenced by name, not by revision. An upstream model
   update would silently produce vectors that no longer match queries.
@@ -158,10 +158,10 @@ covers harvesting as well as serving.
 | `ModuleNotFoundError: sickle` | Dependencies not installed | `pip install -r requirements.txt` |
 | Harvest logs an exception and stops | OAI endpoint unreachable or rate-limited | Retry later; check the endpoint in a browser |
 | Fewer than 1,000 records saved | The OAI stream ended early | Read the log and re-run; the count is not a filter problem |
-| `data/documents.json` missing after an error | `json.dump` only runs after a successful harvest loop | Re-run `python ingest.py --harvest` |
+| `data/documents.json` missing after an error | `json.dump` only runs after a successful harvest loop | Re-run `python -m ingestion.ingest --harvest` |
 | Chroma rejects an insert batch | Batch over the ~5,461 cap | Keep the 1,000-record batching |
-| `documents: 0` in `/ready` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingest.py` and the server from `backend/` |
-| Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python ingest.py --index` |
+| `documents: 0` in `/ready` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingestion/ingest.py` and the server from `backend/` |
+| Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python -m ingestion.ingest --index` |
 | Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts `./data` |
-| Container exits with `attempt to write a readonly database` | The bind-mounted `./data` is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose up -d --build`; a root-owned `./data` (delete-and-recreate without the `.gitkeep`) needs `sudo chown -R "$(id -u):$(id -g)" data` |
-| `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | Give it to the new user and keep the cached model: `docker run --rm -v aisen_model_cache:/model-cache busybox chown -R <uid>:<uid> /model-cache`. `docker compose down -v` also works but redownloads ~470 MB |
+| Container exits with `attempt to write a readonly database` | The bind-mounted `./data` is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build`; a root-owned `./data` (delete-and-recreate without the `.gitkeep`) needs `sudo chown -R "$(id -u):$(id -g)" data` |
+| `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | Give it to the new user and keep the cached model: `docker run --rm -v aisen_model_cache:/model-cache busybox chown -R <uid>:<uid> /model-cache`. `docker compose -f docker/docker-compose.yml down -v` also works but redownloads ~470 MB |

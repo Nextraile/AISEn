@@ -39,10 +39,10 @@ both declare the same Compose project (`aisen`), so they share one network.
 # 1. Build the index — first run only: harvests and embeds 1,000 records
 cd backend
 $env:APP_UID='1000'                       # your uid (`id -u` in WSL); persists in this window
-docker compose --profile tools run --rm tools ingest.py --all
+docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 
 # 2. API -> http://localhost:8000  (returns once healthy)
-docker compose up -d --build --wait
+docker compose -f docker/docker-compose.yml up -d --build --wait
 curl.exe -s http://localhost:8000/ready
 
 # 3. UI -> http://localhost:3000
@@ -51,8 +51,8 @@ docker compose up -d --build --wait
 ```
 
 `APP_UID` lets the container write the bind-mounted `./data`. On Linux/WSL
-prefix the command instead: `APP_UID=$(id -u) docker compose up -d --build
---wait`. If it does not match, `docker-entrypoint.sh` stops the container and
+prefix the command instead: `APP_UID=$(id -u) docker compose -f
+docker/docker-compose.yml up -d --build --wait`. If it does not match, `docker-entrypoint.sh` stops the container and
 prints the owner UID and the container UID, rather than a SQLite traceback.
 
 `backend/data/` is committed as an empty directory (via `data/.gitkeep`) for a
@@ -79,8 +79,8 @@ Two terminals, backend first.
 cd backend
 pip install -r requirements.txt
 cp .env.example .env                     # fill GEMINI_API_KEY and GEMINI_MODEL
-python ingest.py --all                   # only when data/vector_db/ is missing
-uvicorn app:app --reload --port 8000 --env-file .env
+python -m ingestion.ingest --all                   # only when data/vector_db/ is missing
+uvicorn service.app:app --reload --port 8000 --env-file .env
 ```
 
 ```bash
@@ -144,12 +144,12 @@ create it as root. A fresh clone has no index. Build it with either path:
 
 ```bash
 # local
-cd backend && python ingest.py --all
+cd backend && python -m ingestion.ingest --all
 
-# Docker (no Python on the host): ingest.py ships only in the `tools` profile
-cd backend && docker compose --profile tools run --rm tools ingest.py --all
+# Docker (no Python on the host): ingestion ships only in the `tools` profile
+cd backend && docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 ```
 
 Both harvest the Undip OAI-PMH feed, embed the records, and create the
-collection. `ingest.py` deletes and recreates the collection, so re-running is
+collection. `ingestion/ingest.py` deletes and recreates the collection, so re-running is
 a full rebuild, not an update.
