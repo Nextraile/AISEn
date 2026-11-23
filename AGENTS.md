@@ -35,7 +35,7 @@ pip install -r requirements.txt
 python -m ingestion.ingest --all                     # only when data/vector_db/ is missing
 uvicorn service.app:app --reload --port 8000 --env-file .env
 pytest
-APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait
 ```
 
 Frontend:
@@ -54,8 +54,8 @@ Docker — the same Compose project (`aisen`) for both, so `aisen-web` reaches
 
 ```bash
 cd backend
-APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
-APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait      # API on :8000
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait      # API on :8000
 
 cd ../frontend
 docker compose up -d --build --wait                       # UI on :3000

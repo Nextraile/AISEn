@@ -21,7 +21,7 @@ Each service is self-contained. Run every command from inside its own
 directory — paths such as `CHROMA_DB_PATH` (default `./data/vector_db`) and
 `--env-file .env` are relative to `backend/`. Compose for the backend lives in
 `backend/docker/`, so those commands name the file:
-`docker compose -f docker/docker-compose.yml ...`.
+`docker compose -f docker/docker-compose.yml --env-file .env ...`.
 
 ## Requirements
 
@@ -41,10 +41,10 @@ both declare the same Compose project (`aisen`), so they share one network.
 # 1. Build the index — first run only: harvests and embeds 1,000 records
 cd backend
 $env:APP_UID='1000'                       # your uid (`id -u` in WSL); persists in this window
-docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
 
 # 2. API -> http://localhost:8000  (returns once healthy)
-docker compose -f docker/docker-compose.yml up -d --build --wait
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait
 curl.exe -s http://localhost:8000/ready
 
 # 3. UI -> http://localhost:3000
@@ -150,7 +150,7 @@ create it as root. A fresh clone has no index. Build it with either path:
 cd backend && python -m ingestion.ingest --all
 
 # Docker (no Python on the host): ingestion ships only in the `tools` profile
-cd backend && docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+cd backend && docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
 ```
 
 Both harvest the Undip OAI-PMH feed, embed the records, and create the

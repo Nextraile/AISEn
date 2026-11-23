@@ -110,8 +110,8 @@ a similarity. `/ready` reports the metric so this is checkable.
    profile (the serving image does not contain it):
 
    ```bash
-   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
-   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "analisis kualitas air sungai"
+   docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
+   docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --query "analisis kualitas air sungai"
    ```
 
    Every setting has an environment default (see `../.env.example`), so a
@@ -163,5 +163,5 @@ covers harvesting as well as serving.
 | `documents: 0` in `/ready` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingestion/ingest.py` and the server from `backend/` |
 | Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python -m ingestion.ingest --index` |
 | Docker sees no data | `./data/vector_db` missing on the host | Build it on the host; compose bind-mounts `./data` |
-| Container exits with `attempt to write a readonly database` | The bind-mounted `./data` is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build`; a root-owned `./data` (delete-and-recreate without the `.gitkeep`) needs `sudo chown -R "$(id -u):$(id -g)" data` |
-| `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | Give it to the new user and keep the cached model: `docker run --rm -v aisen_model_cache:/model-cache busybox chown -R <uid>:<uid> /model-cache`. `docker compose -f docker/docker-compose.yml down -v` also works but redownloads ~470 MB |
+| Container exits with `attempt to write a readonly database` | The bind-mounted `./data` is owned by your UID, the image runs as a different UID | Build with `APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env up -d --build`; a root-owned `./data` (delete-and-recreate without the `.gitkeep`) needs `sudo chown -R "$(id -u):$(id -g)" data` |
+| `APP_UID` changed but the container still fails | The `model_cache` volume is owned by the previous UID | Give it to the new user and keep the cached model: `docker run --rm -v aisen_model_cache:/model-cache busybox chown -R <uid>:<uid> /model-cache`. `docker compose -f docker/docker-compose.yml --env-file .env down -v` also works but redownloads ~470 MB |

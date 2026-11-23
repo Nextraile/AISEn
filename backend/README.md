@@ -84,13 +84,21 @@ schema is at `/openapi.json`.
 
 ```bash
 cp .env.example .env   # docker compose fails without this file
-APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait
 ```
 
 This builds and serves `service/app.py` on <http://localhost:8000>, and returns only once
 the container is healthy. Override the published port with `API_PORT` (Compose
 maps `${API_PORT:-8000}:8000`) and the first-start grace period with
 `HEALTH_START_PERIOD` (default `120s`).
+
+`--env-file .env` is not optional. `-f docker/docker-compose.yml` makes `docker/`
+the project directory, so Compose looks for `docker/.env` when it substitutes
+`${APP_UID}`, `${API_PORT}` and `${HEALTH_START_PERIOD}`. That file does not
+exist, and every one of those would fall back to its default *silently* — the
+container still receives the value through `env_file: ../.env`, which is why
+`docker inspect` looks correct while `start_period` stays at `120s`. Omitting the
+flag is how a slow first model load turns into a spurious `unhealthy`.
 
 The Compose project is `aisen`, so the container is `aisen-api`, the network
 `aisen_default`, and the model cache volume `aisen_model_cache`. Those names are
@@ -100,7 +108,7 @@ and without publishing the API port to the browser's machine.
 
 `APP_UID` makes the container run as your own user, so it can write the
 bind-mounted `./data/vector_db`. On PowerShell:
-`$env:APP_UID=1000; docker compose -f docker/docker-compose.yml up -d --build --wait`.
+`$env:APP_UID=1000; docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait`.
 
 If the UID does not match, `docker-entrypoint.sh` stops the container before
 ChromaDB is opened and prints the owner UID, the container UID, and the exact
@@ -119,12 +127,12 @@ that volume owned by the previous user; either hand it to the new one, which
 keeps the download —
 
 ```bash
-docker compose -f docker/docker-compose.yml down
+docker compose -f docker/docker-compose.yml --env-file .env down
 docker run --rm -v aisen_model_cache:/model-cache busybox chown -R "$(id -u):$(id -g)" /model-cache
 ```
 
 — or delete it with `docker volume rm aisen_model_cache` (equivalently
-`docker compose -f docker/docker-compose.yml down -v`) and pay the download again.
+`docker compose -f docker/docker-compose.yml --env-file .env down -v`) and pay the download again.
 
 ### Ingesting without installing Python on the host
 
@@ -134,12 +142,12 @@ reused rather than downloaded twice — and runs the script with the repository
 mounted:
 
 ```bash
-docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
-docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "analisis kualitas air sungai"
+docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
+docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --query "analisis kualitas air sungai"
 ```
 
 `--profile tools` is needed because the service is hidden by default, so a plain
-`docker compose -f docker/docker-compose.yml up` still starts only the API. This
+`docker compose -f docker/docker-compose.yml --env-file .env up` still starts only the API. This
 is the Docker-only path: no `pip install`, and `--query` uses the same
 `rank_results()` as `POST /search`, so its scores match the API exactly.
 
@@ -443,8 +451,8 @@ Compose lives in `docker/`, so its paths are relative to that directory and the
 file has to be named when running a command:
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d --build --wait
-docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait
+docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
 ```
 
 ## Troubleshooting
@@ -455,7 +463,7 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 | Startup hangs at "Waiting for application startup" with no further output | The repo sits on a network path (`\\wsl.localhost\...`, a share); SQLite blocks on it | Run uvicorn inside WSL, or copy the repo and the DB to a local disk |
 | Startup takes minutes | First-time embedding-model download (~470 MB) | Wait once; the HuggingFace cache (or `model_cache` volume) is reused |
 | `/ready` shows `"documents": 0` | Empty collection | Run `python -m ingestion.ingest --all` |
-| `docker compose -f docker/docker-compose.yml up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
+| `docker compose -f docker/docker-compose.yml --env-file .env up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
 | `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python -m ingestion.ingest --index`; scores are meaningless otherwise |
 | `/ready` lists `last ingest failed: …` | The most recent `ingestion/ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
@@ -465,7 +473,7 @@ docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
 | `status=no_results` on a one-word query | Short queries score much lower than phrases (one word `stunting` 0.53 vs 0.74–0.84 for phrases) | Ask in a phrase with more context; do not lower the threshold just to fill the list |
 | `status=no_results` every time | Threshold too strict, or the corpus genuinely has no match | Score a phrase with `python -m ingestion.ingest --query "<phrase>"`; if nothing is close, the retrieval is the problem, not the threshold |
 | `status=no_results`, `arahan` says "Belum ada dokumen" | Collection is empty | Run `python -m ingestion.ingest --all` |
-| `docker compose -f docker/docker-compose.yml logs -f` shows an old traceback after a successful restart | `-f` replays the whole history, including the previous failed attempt | Use `docker compose -f docker/docker-compose.yml logs --tail 40 aisen-api`, and confirm with `docker inspect aisen-api --format '{{.State.Health.Status}}'` |
+| `docker compose -f docker/docker-compose.yml --env-file .env logs -f` shows an old traceback after a successful restart | `-f` replays the whole history, including the previous failed attempt | Use `docker compose -f docker/docker-compose.yml --env-file .env logs --tail 40 aisen-api`, and confirm with `docker inspect aisen-api --format '{{.State.Health.Status}}'` |
 | `422 Unprocessable Content` | Empty/whitespace `query`, or `threshold` outside 0.1–0.9 | Fix the request body |
 | Browser CORS error | Should not happen (`allow_origins=["*"]`) | Confirm the response carries `access-control-allow-origin: *` |
 

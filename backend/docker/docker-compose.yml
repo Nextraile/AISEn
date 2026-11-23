@@ -8,8 +8,12 @@ services:
       args:
         # Match the host UID so the bind-mounted data directory is writable by
         # the container. Run these from backend/:
-        # Linux/WSL: APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up
-        # PowerShell: $env:APP_UID=1000; docker compose -f docker/docker-compose.yml up
+        # Run from `backend/` and always pass `--env-file .env`: `-f docker/...`
+        # makes `docker/` the project directory, so Compose would otherwise look
+        # for `docker/.env` when interpolating ${APP_UID} / ${API_PORT} /
+        # ${HEALTH_START_PERIOD} and silently fall back to the defaults.
+        # Linux/WSL: APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env up
+        # PowerShell: $env:APP_UID=1000; docker compose -f docker/docker-compose.yml --env-file .env up
 
         APP_UID: ${APP_UID:-10001}
     container_name: aisen-api
@@ -40,6 +44,8 @@ services:
       timeout: 5s
       retries: 3
       # first model load can take ~70 seconds, and longer if EMBEDDING_MODEL is changed to a larger model.
+      # Set HEALTH_START_PERIOD in `backend/.env`; it only takes effect because
+      # the documented command passes `--env-file .env` (see the header above).
       start_period: ${HEALTH_START_PERIOD:-120s}
 
   # Ingestion CLI: the same image with the ingestion package (INGEST=1), so the
@@ -47,8 +53,8 @@ services:
   # directory is mounted because the script writes ./data/documents.json as well
   # as ./data/vector_db.
   #
-  #   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --all
-  #   docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "..."
+  #   docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
+  #   docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --query "..."
   tools:
     profiles: ["tools"]
     build:

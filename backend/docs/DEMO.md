@@ -24,16 +24,16 @@ when something does not cooperate. Written for the prototype as it exists today.
 - [ ] If you demo via Docker, build with your own UID so the bind-mounted DB is
   writable:
   ```bash
-  APP_UID=$(id -u) docker compose -f docker/docker-compose.yml up -d --build --wait
+  APP_UID=$(id -u) docker compose -f docker/docker-compose.yml --env-file .env up -d --build --wait
   ```
   Without `APP_UID` the container runs as UID 10001 and the entrypoint stops
   with the owner UID and the container UID. After changing it, hand the model
   cache to the new user instead of redownloading it:
   ```bash
-  docker compose -f docker/docker-compose.yml down
+  docker compose -f docker/docker-compose.yml --env-file .env down
   docker run --rm -v aisen_model_cache:/model-cache busybox chown -R "$(id -u):$(id -g)" /model-cache
   ```
-  (`docker compose -f docker/docker-compose.yml down -v` also unblocks it, but pays the ~470 MB download.)
+  (`docker compose -f docker/docker-compose.yml --env-file .env down -v` also unblocks it, but pays the ~470 MB download.)
 - [ ] If the audience sees the UI rather than Swagger, start it from `frontend/`
   and confirm the nginx proxy reaches the API:
   ```bash
@@ -50,7 +50,7 @@ when something does not cooperate. Written for the prototype as it exists today.
   ```
   Without Python on the host, the `tools` profile runs the same script:
   ```bash
-  docker compose -f docker/docker-compose.yml --profile tools run --rm tools --query "analisis kualitas air sungai"
+  docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --query "analisis kualitas air sungai"
   ```
 - [ ] Check every readiness fact in one call:
   ```bash
