@@ -9,15 +9,27 @@ consistent and makes the output swappable:
 - `LOG_FILE=logs/ingest.log` — also append to a file, so a `docker compose run
   --rm` container cannot take the only copy of the log with it.
 
-Text output puts structure in brackets and data in `key=value` pairs:
+Text output puts the frame in brackets and the data in `key=value` pairs:
 
-    [07:28:55] [ingest] [INFO]  harvest done    valid=47945 took=15m59s
+    [ 15:25:33 ] [ INFO ]     [ ingest ]    harvest complete  valid=47945
 
-Brackets mark the fixed columns (time, logger, level) that every line has, so
-the eye can skip them and land on the message. Data stays `key=value` because
-that survives `grep failure stage=index` and any log collector; brackets there
-would only add noise. Third-party libraries log through the same handler, and
-their DEBUG chatter is indented and dimmed so it reads as background.
+The bracket rule is fixed: exactly one space inside each bracket, never more.
+The gap after the closing bracket is what aligns the columns, so `[ INFO ]` is
+followed by more spaces than `[ CRITICAL ]` while the message still lands on the
+same column. Padding inside the brackets would read as if the blanks belonged to
+the value.
+
+Punctuation is classified by where it sits, not by the character:
+
+- frame (`[ ]`) - the three cells every line has; the formatter owns and pads it
+- data (`=`) - `key=value`, bare, never padded
+- value - passed through byte-for-byte; a `:` in `TypeError: bad`, a `{}` in a
+  metadata repr and a `%` in `pct=52%` are content, not structure. Only
+  whitespace, a quote or a newline forces `json.dumps` quoting, which keeps the
+  line re-parseable and a multi-line error message on one line.
+
+Third-party libraries log through the same handler, and their DEBUG chatter is
+indented so it reads as background.
 
 The handler is added once per process: `app.py` is imported by the tests, and
 duplicate handlers would double every line. The level is applied on every call,
@@ -36,18 +48,57 @@ from common.config import SETTINGS
 
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
-# `[HH:MM:SS] [logger] [LEVEL] message` — the three bracketed columns are what
-# every line shares, so they are padded to a fixed width and the message always
-# starts at the same column.
-TIME_WIDTH = 8  # HH:MM:SS
-LOGGER_WIDTH = 8  # aisen.ingest -> "ingest"; urllib3.connectionpool -> "urllib3"
-LEVEL_WIDTH = len("CRITICAL")  # 8: the longest level, so every bracket is the same width
+# Every line opens with three framed cells: time, level, logger.
+#
+#     [ 15:25:33 ] [ INFO ]     [ ingest ]    harvesting   valid=250
+#     [ 15:25:33 ] [ CRITICAL ] [ ingest ]    boom
+#
+# The rule for a cell is fixed: exactly ONE space inside each bracket, never
+# more. Width differences are absorbed by the gap AFTER the closing bracket, so
+# a short value like `[ INFO ]` is followed by more spaces than `[ CRITICAL ]`.
+# That keeps the inside of every bracket identical and still lands the message
+# on the same column:
+#
+#     [ hello ]        [ world ]
+#     [ this is what ] [ i mean ]
+#
+# Padding inside the brackets would look like `[ INFO     ]`, which reads as if
+# the trailing blanks belonged to the value.
+def _cell(value: str) -> str:
+    """Frame a value with exactly one space on each side. No inner padding."""
+    return "[ {} ]".format(value)
+
+
+# Column widths are derived from a CLOSED set of known values, not from
+# whatever a line happens to contain. If a width came from the line itself,
+# `[ INFO ]` and `[ CRITICAL ]` would make their own lines different widths and
+# the message column would wander - the asymmetry this shape exists to remove.
+# A value longer than the set is truncated in `_cell`, so it cannot push the
+# column either.
+LEVEL_VALUES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+LOGGER_VALUES = (
+    "ingest",
+    "search",
+    "watch",
+    "startup",
+    "urllib3",
+    "httpcore",
+    "httpx",
+    "filelock",
+)
+TIME_CONTENT_WIDTH = len("00:00:00")
+LEVEL_CONTENT_WIDTH = max(len(value) for value in LEVEL_VALUES)
+LOGGER_CONTENT_WIDTH = max(len(value) for value in LOGGER_VALUES)
+
+TIME_COLUMN = len(_cell("0" * 8))
+LEVEL_COLUMN = len(_cell("X" * LEVEL_CONTENT_WIDTH))
+LOGGER_COLUMN = len(_cell("X" * LOGGER_CONTENT_WIDTH))
 
 # Third-party DEBUG lines are background noise during an ingest: 87% of a real
 # run. They are kept - dropping them would hide genuine transport failures - but
-# indented and shortened so the application's own lines stand out.
+# indented and shortened so the application's own lines stand out. They share
+# the same three column widths, so their frames line up with ours.
 NOISE_INDENT = "  "
-NOISE_LOGGER_WIDTH = 16
 NOISE_MESSAGE_WIDTH = 100
 
 # Libraries whose DEBUG output is transport/library chatter rather than ours.
@@ -95,45 +146,40 @@ def _is_noise(record: logging.LogRecord) -> bool:
 
 
 class TextFormatter(logging.Formatter):
-    """`[time] [service] [LEVEL] message key=value` for a terminal.
+    """`[ time ] [ LEVEL ] [ logger ] message key=value` for a terminal.
 
-    Structure is bracketed because every line has it; data keeps `key=value` so
-    it stays greppable. Exception tracebacks are NOT indented - a traceback read
-    from a wrapped terminal is worse than a long line.
+    One space inside every bracket, always; the gap after each closing bracket
+    is what aligns the columns. Data stays `key=value` so it is greppable, and a
+    value is quoted only when it would otherwise break the line. Exception
+    tracebacks are NOT indented - a traceback read from a wrapped terminal is
+    worse than a long line.
     """
 
     def format(self, record: logging.LogRecord) -> str:
         # Local time, seconds only: the date is in the file name and `+0000` adds
         # nine characters a human never reads.
         stamp = self.formatTime(record, "%H:%M:%S")
+        service = _service_name(record.name)[:LOGGER_CONTENT_WIDTH]
+
+        head = "{} {} {} ".format(
+            _cell(stamp).ljust(TIME_COLUMN),
+            _cell(record.levelname).ljust(LEVEL_COLUMN),
+            _cell(service).ljust(LOGGER_COLUMN),
+        )
 
         if _is_noise(record):
-            # Background: two-space indent, abbreviated logger, truncated body.
+            # Background: two-space indent, same frame, truncated body, and no
+            # `key=value` decoration - library messages are prose, not data.
             message = record.getMessage().replace("\n", " ")
             if len(message) > NOISE_MESSAGE_WIDTH:
                 message = message[: NOISE_MESSAGE_WIDTH - 1] + "…"
-            head = "{indent}[{time}] [{logger:<{lw}}] {level:<{lvw}} ".format(
-                indent=NOISE_INDENT,
-                time=stamp,
-                logger=_service_name(record.name)[:NOISE_LOGGER_WIDTH],
-                lw=NOISE_LOGGER_WIDTH,
-                level=record.levelname,
-                lvw=LEVEL_WIDTH,
-            )
-            line = head + message
+            line = NOISE_INDENT + head + message
         else:
-            head = "[{time}] [{service:<{sw}}] [{level:<{lw}}] ".format(
-                time=stamp,
-                service=_service_name(record.name)[:LOGGER_WIDTH],
-                sw=LOGGER_WIDTH,
-                level=record.levelname,
-                lw=LEVEL_WIDTH,
-            )
             parts = [record.getMessage()]
             for name in _STRUCTURED_FIELDS:
                 value = getattr(record, name, None)
                 if value is not None:
-                    parts.append("{}={}".format(name, _format_value(value)))
+                    parts.append(_pair(name, value))
             line = head + " ".join(parts)
 
         if record.exc_info:
@@ -141,12 +187,19 @@ class TextFormatter(logging.Formatter):
         return line
 
 
-def _format_value(value: object) -> str:
-    """Render a structured field so it stays one grep-able token."""
+def _pair(key: str, value: object) -> str:
+    """Render one data field. The value is passed through byte-for-byte.
+
+    Punctuation inside a value is content, not structure: a `:` in
+    `TypeError: bad`, a `{}` in a metadata repr, a `%` in `pct=52%` all mean
+    something to the reader and nothing to the formatter. Only characters that
+    would break the line - whitespace, a quote, a newline - force quoting, which
+    keeps a multi-line `validate()` message on one line and safely delimited.
+    """
     text = str(value)
     if not text or any(ch.isspace() or ch == '"' for ch in text):
-        return json.dumps(text, ensure_ascii=False)
-    return text
+        return "{}={}".format(key, json.dumps(text, ensure_ascii=False))
+    return "{}={}".format(key, text)
 
 
 class JsonFormatter(logging.Formatter):

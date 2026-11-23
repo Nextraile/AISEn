@@ -37,7 +37,13 @@ def _log(message: str) -> None:
     sidecar and must not pull in chromadb or the embedding model to run.
     """
     stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"[{stamp}] [watch   ] [INFO ] {message}", flush=True)
+    # Same frame as `common.logging_setup.TextFormatter`: exactly one space
+    # inside each bracket, the gap after it absorbing the width difference.
+    # A literal because this module is stdlib-only by design; keep in step.
+    print(
+        f"[ {stamp} ] [ INFO ]     [ watch ]    {message}",
+        flush=True,
+    )
 
 
 def probe() -> tuple[bool, str]:

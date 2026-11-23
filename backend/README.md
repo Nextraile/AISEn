@@ -267,17 +267,25 @@ hang:
   stage is timed, and the run ends with
   `ingest complete    took=41m12s records=47915 documents=47915` or
   `INGEST FAILED      stage=index after=2m03s error=TypeError: …`.
-- **Log shape.** Terminal lines are `[HH:MM:SS] [logger] [LEVEL] message`, with
-  the data as `key=value` so it stays greppable:
+- **Log shape.** Terminal lines open with three framed cells — time, level,
+  logger — then the message and its `key=value` data:
 
   ```
-  [07:44:54] [ingest  ] [INFO    ] harvest complete   valid=47945 scanned=55575
+  [ 07:44:54 ] [ INFO ]     [ ingest ]   harvest complete  valid=47945 scanned=55575
+  [ 07:44:54 ] [ WARNING ]  [ ingest ]   collection is empty
+  [ 07:44:54 ] [ CRITICAL ] [ ingest ]   boom
   ```
 
-  The three bracketed columns are padded to a fixed width, so the message always
-  starts at the same column and the eye can skip straight past them. Third-party
-  libraries log through the same handler; their DEBUG chatter is indented and
-  truncated so it reads as background instead of competing with the app's lines.
+  Every bracket holds exactly one space on each side; the gap *after* the
+  closing bracket is what aligns the columns, so `[ INFO ]` is followed by more
+  spaces than `[ CRITICAL ]` and the message still starts at the same column.
+  Punctuation is classified by where it sits, not by the character: the frame
+  brackets are structure and get padded, `key=value` pairs are data, and inside
+  a value everything is passed through byte-for-byte — a `:` in `TypeError: x`,
+  a `{}` in a metadata repr and a `%` in `pct=52%` are content. A value is
+  quoted only when it holds a space, a quote or a newline, which keeps a
+  multi-line error message on one line. Third-party libraries log through the
+  same handler; their DEBUG chatter is indented so it reads as background.
   Use `LOG_FORMAT=json` when a collector is reading, not a person.
 - **One writer.** `ingestion/ingest.py` takes an `flock` on `data/.ingest.lock`; a second
   run exits immediately with `another ingest is already running (pid …)`
