@@ -12,7 +12,11 @@
  */
 
 const FALLBACK = {
-  apiBaseUrl: "",
+  // Dev-server default: the backend runs on :8000, and vite.config.ts has no
+  // proxy, so an empty value would send requests to the dev server's own origin
+  // (5173) and every search would 404. Docker does not rely on this: the image
+  // passes VITE_API_BASE_URL=/api as a build arg so the UI calls its own origin.
+  apiBaseUrl: "http://localhost:8000",
   apiTimeoutMs: 15_000,
   defaultThreshold: 0.60,
   resultsPerPage: 10,
