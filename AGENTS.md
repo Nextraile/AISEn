@@ -24,8 +24,8 @@ a plain Vite app, so the rules below apply as-is.
 Each service assumes its own directory as the working directory.
 
 Backend — `settings.py` (generated: `./data/vector_db`, `data/documents.json`),
-`pytest.ini` (`pythonpath = .`), and `--env-file .env` are all relative to
-`backend/`:
+`pyproject.toml` (`pythonpath = ["."], testpaths = ["tests"]`), and
+`--env-file .env` are all relative to `backend/`:
 
 ```bash
 cd backend
