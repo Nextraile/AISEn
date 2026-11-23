@@ -68,13 +68,15 @@ because there is no root `package.json`, and fail from the UNC path
 
 ## Conventions
 
-- Do not commit secrets or generated data. `backend/.env` and `backend/data/`
-  are git-ignored; `backend/.env.example` documents every variable and
-  `frontend/.env.example` documents the frontend's.
-- `frontend/.env` is committed on purpose. It holds no secrets — API base URL,
-  request timeout, default threshold, page size, debounce delay, and the three
-  relevance presets — and `.env.example` documents each one. Everything secret
-  belongs in the backend. Vite inlines these values at build time.
+- Do not commit secrets or generated data. `backend/.env`, `frontend/.env`, and
+  `backend/data/` are git-ignored; `backend/.env.example` and
+  `frontend/.env.example` document every variable and are the files to copy from.
+- `frontend/.env` is **not** committed. It holds no secrets, but it is still
+  per-checkout configuration (API base URL, request timeout, default threshold,
+  page size, debounce delay, relevance presets), so a fresh clone starts from
+  `src/app/config.ts` fallbacks until you run `cp .env.example .env`. Everything
+  genuinely secret belongs in `backend/.env`. Vite inlines these values at build
+  time, so a change needs a dev-server restart or a rebuild.
 - Docker builds ignore `frontend/.env`: `frontend/docker-compose.yml` passes the
   same names as build args, and `.dockerignore` keeps `.env` out of the context
   so a dev value cannot be baked into the image. Changing any `VITE_*` value

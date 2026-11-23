@@ -26,6 +26,7 @@ runtime variables — see [Configuration](#configuration). The one runtime knob 
 
 ```bash
 cd frontend
+cp .env.example .env    # first time only: .env is not committed
 npm ci
 npm run dev        # http://localhost:5173
 ```
@@ -33,6 +34,9 @@ npm run dev        # http://localhost:5173
 The dev server calls the backend cross-origin using `VITE_API_BASE_URL` from
 `.env` (default `http://localhost:8000`). CORS is open on the backend by
 default, so no proxy is needed.
+
+`.env` is per-checkout and git-ignored; without it the app falls back to the
+defaults in `src/app/config.ts`, which match `.env.example`.
 
 > **UNC paths:** npm scripts fail when the checkout is reached through
 > `\\wsl.localhost\...`. Run this from inside WSL, or use the Docker path above —

@@ -1,0 +1,16 @@
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python run from the repository root
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secret material that must never be committed
+.env
+*.pem
+*.key

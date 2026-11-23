@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Local configuration. Copy .env.example and adjust; the example stays tracked.
+.env
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
