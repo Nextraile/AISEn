@@ -308,6 +308,100 @@ hang:
 so a broken index never causes a restart loop). Use `GET /ready` for the facts
 that decide whether searches can work.
 
+## Sizing
+
+The defaults are tuned for one modest machine. To move to another tier, change
+only the six knobs below; everything else is either fixed or ingest-only.
+
+Two facts invert the usual intuition, so start there:
+
+- **`SEARCH_N_RESULTS` is the main per-query cost, and it is nearly free to cut.**
+  Chroma fetches that many candidates and Python filters them by `threshold`. The
+  threshold already decides relevance, so a smaller candidate pool changes *what
+  is shown* far less than it changes *how much work each request does*.
+- **`EMBED_*`, `INSERT_BATCH_SIZE` and `PROGRESS_EVERY` are ingest-only.** They
+  change the memory peak and log volume of `ingestion/ingest.py` and have zero
+  effect on the serving container. Lowering them does not make the API cheaper.
+
+### Fixed costs — no setting reduces these
+
+| Cost | Value |
+| --- | --- |
+| Embedding model | `paraphrase-multilingual-MiniLM-L12-v2`, ~118M params, 384 dims, CPU torch |
+| Vectors | 47,913 × 384 × 4 B ≈ **70 MB** raw float32 |
+| Chroma on disk | budget **2–3×** raw for the HNSW index (~150–210 MB) |
+| Model load on boot | the longest startup step on CPU; `HEALTH_START_PERIOD` must exceed it |
+
+### The six knobs
+
+| Knob | What it trades |
+| --- | --- |
+| `SEARCH_N_RESULTS` | per-query work and result cap — the big serving lever |
+| `SUMMARY_TOP_K` | prompt size, so Gemini latency and token cost (must be ≤ `SEARCH_N_RESULTS`) |
+| `LLM_TIMEOUT_SECONDS` | how long a slow LLM is tolerated before `list_only` |
+| `EMBED_BATCH_SIZE` | ingest memory peak; lower on a small-RAM machine |
+| `EMBED_CHUNK_SIZE` | ingest memory held per chunk, and encode-line cadence |
+| `HEALTH_START_PERIOD` | Compose start grace; too low turns slow model load into a restart loop |
+
+### Tiers
+
+**Low** — 2 vCPU, 2 GB RAM, no GPU. Startup is the risk here, not throughput.
+
+```bash
+SEARCH_N_RESULTS=25
+SUMMARY_TOP_K=3
+LLM_TIMEOUT_SECONDS=20
+EMBED_BATCH_SIZE=16
+EMBED_CHUNK_SIZE=1000
+INSERT_BATCH_SIZE=500
+PROGRESS_EVERY=100
+LOG_LEVEL=WARNING
+LOG_FILE=
+HEALTH_START_PERIOD=300s
+```
+
+**Medium** — 4 vCPU, 8 GB RAM, no GPU.
+
+```bash
+SEARCH_N_RESULTS=50
+SUMMARY_TOP_K=5
+LLM_TIMEOUT_SECONDS=15
+EMBED_BATCH_SIZE=32
+EMBED_CHUNK_SIZE=2000
+INSERT_BATCH_SIZE=1000
+PROGRESS_EVERY=250
+LOG_LEVEL=INFO
+LOG_FILE=logs/aisen.log
+HEALTH_START_PERIOD=180s
+```
+
+**High** — 8+ vCPU, 16 GB RAM, GPU optional.
+
+```bash
+SEARCH_N_RESULTS=100
+SUMMARY_TOP_K=8
+LLM_TIMEOUT_SECONDS=15
+EMBED_BATCH_SIZE=128
+EMBED_CHUNK_SIZE=10000
+INSERT_BATCH_SIZE=2000
+PROGRESS_EVERY=500
+LOG_LEVEL=INFO
+LOG_FILE=logs/aisen.log
+HEALTH_START_PERIOD=120s
+```
+
+### Invariants — `Settings.validate()` rejects these at startup
+
+- `THRESHOLD_MIN < THRESHOLD_DEFAULT < THRESHOLD_MAX`
+- `SUMMARY_TOP_K <= SEARCH_N_RESULTS`
+- `INSERT_BATCH_SIZE <= 5461` (ChromaDB's batch cap)
+
+`THRESHOLD_DEFAULT` is **not** a sizing knob. It is measured on the full corpus
+(relevant 0.74–0.84, noise ≤ 0.559); lowering it on a small machine to "get more
+results" is the 0.53 bug that leaked food-adjacent noise. A smaller
+`SEARCH_N_RESULTS` can legitimately return fewer results — that is a valid
+answer, not a reason to loosen the threshold.
+
 ## Project structure
 
 Modules are grouped by role. Imports are top-level (`from common.config import
