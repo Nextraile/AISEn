@@ -271,22 +271,22 @@ hang:
   logger — then the message and its `key=value` data:
 
   ```
-  [ 07:44:54 ] [ INFO ]     [ ingest ]   harvest complete  valid=47945 scanned=55575
-  [ 07:44:54 ] [ WARNING ]  [ ingest ]   collection is empty
-  [ 07:44:54 ] [ CRITICAL ] [ ingest ]   boom
+  [07:44:54] [INFO]     [ingest]   harvest complete  valid=47945 scanned=55575
+  [07:44:54] [WARNING]  [ingest]   collection is empty
+  [07:44:54] [CRITICAL] [ingest]   boom
   ```
 
-  Every bracket holds exactly one space on each side; the gap *after* the
-  closing bracket is what aligns the columns, so `[ INFO ]` is followed by more
-  spaces than `[ CRITICAL ]` and the message still starts at the same column.
-  Punctuation is classified by where it sits, not by the character: the frame
-  brackets are structure and get padded, `key=value` pairs are data, and inside
-  a value everything is passed through byte-for-byte — a `:` in `TypeError: x`,
-  a `{}` in a metadata repr and a `%` in `pct=52%` are content. A value is
-  quoted only when it holds a space, a quote or a newline, which keeps a
-  multi-line error message on one line. Third-party libraries log through the
-  same handler; their DEBUG chatter is indented so it reads as background.
-  Use `LOG_FORMAT=json` when a collector is reading, not a person.
+  Nothing sits inside a bracket but the value; the gap *after* the closing
+  bracket is what aligns the columns, so `[INFO]` is followed by more spaces than
+  `[CRITICAL]` and the message still starts at the same column. Punctuation is
+  classified by where it sits, not by the character: the frame is structure,
+  `key=value` pairs are data, and inside a value everything is passed through
+  byte-for-byte — a `:` in `TypeError: x`, a `{}` in a metadata repr and a `%` in
+  `pct=52%` are content. A value is quoted only when it holds a space, a quote or
+  a newline, which keeps a multi-line error message on one line. Third-party
+  libraries log through the same handler; their DEBUG chatter is indented so it
+  reads as background. Use `LOG_FORMAT=json` when a collector is reading, not a
+  person.
 - **One writer.** `ingestion/ingest.py` takes an `flock` on `data/.ingest.lock`; a second
   run exits immediately with `another ingest is already running (pid …)`
   instead of interleaving a delete with the other run's inserts.

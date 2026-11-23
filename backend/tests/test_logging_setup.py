@@ -1,9 +1,10 @@
 """The terminal log shape, so a future edit cannot silently make it unreadable.
 
-The frame rule: exactly ONE space inside each bracket, always. The gap after the
-closing bracket is what aligns columns, so `[ INFO ]` is followed by more spaces
-than `[ CRITICAL ]`. Asserting `len(inner) == len(value) + 2` is what pins that -
-a `strip()` check cannot, since `" INFO "` and `" INFO     "` both strip alike.
+The frame rule: nothing inside a bracket but the value. `[INFO]`, never
+`[ INFO ]`, never `[INFO    ]`. All width lives in the gap AFTER the closing
+bracket, which is what aligns the columns. Asserting `body == body.strip()` is
+what pins that - a `strip()`-tolerant check would let `" INFO "` back in, and
+that is exactly the shape this replaced.
 """
 
 from __future__ import annotations
@@ -28,9 +29,9 @@ def _record(name: str, level: int, msg: str, args=(), **extra) -> logging.LogRec
     return record
 
 
-def _cells(line: str) -> list[str]:
-    """Contents of each bracketed cell on the line, in order."""
-    return re.findall(r"\[ ([^\]]*) \]", line)
+def _bodies(line: str) -> list[str]:
+    """Raw contents of each bracketed cell on the line, in order."""
+    return re.findall(r"\[([^\]]*)\]", line)
 
 
 def _message_column(line: str) -> int:
@@ -44,36 +45,34 @@ def _message_column(line: str) -> int:
 
 
 @pytest.mark.parametrize("level", ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-def test_every_bracket_has_exactly_one_space_inside(level):
+def test_no_padding_inside_any_bracket(level):
     line = _render(_record("aisen.ingest", getattr(logging, level), "message"))
-    # `[ X ]` only: one leading and one trailing space, never a run of them.
-    for inner in _cells(line):
-        assert inner == inner.strip(), "padding leaked inside the bracket: {!r}".format(inner)
-    # Nothing like `[ INFO     ]`: check each bracket body's own trailing space
-    # run, not the gap after the closing bracket.
-    for body in re.findall(r"\[([^\]]*)\]", line):
-        assert body.startswith(" ") and body.endswith(" ")
-        assert body == " " + body.strip() + " "
+    bodies = _bodies(line)
+    assert bodies, "no frame found in: %r".format(line)
+    for body in bodies:
+        # The value touches both walls: no leading or trailing space at all.
+        assert body == body.strip(), "padding leaked inside the bracket: {!r}".format(body)
+        assert "  " not in body, "run of spaces inside the bracket: {!r}".format(body)
 
 
-def test_cell_width_is_value_plus_two():
+def test_cell_is_the_value_between_tight_brackets():
     for value in ("15:25:33", "INFO", "CRITICAL", "ingest", "httpcore"):
         cell = logging_setup._cell(value)
-        assert cell == "[ {} ]".format(value)
-        assert len(cell) == len(value) + 4, "one space each side, plus the brackets"
+        assert cell == "[{}]".format(value)
+        assert len(cell) == len(value) + 2, "just the brackets, no inner space"
 
 
 def test_gap_is_outside_the_bracket_not_inside():
     info = _render(_record("aisen.ingest", logging.INFO, "BODY"))
     crit = _render(_record("aisen.ingest", logging.CRITICAL, "BODY"))
-    # The inside of a short cell is still just ` INFO `.
-    assert "[ INFO ]" in info
+    # The inside of a short cell is still just `INFO`.
+    assert "[INFO]" in info
     # The width difference shows up AFTER the closing bracket of the level cell.
-    level_cell = re.search(r"\[ (?:DEBUG|INFO|WARNING|ERROR|CRITICAL) \]( +)", info)
+    level_cell = re.search(r"\[(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)\]( +)", info)
     assert level_cell, info
     assert len(level_cell.group(1)) > 1, "gap must be outside, not inside"
-    # ...and CRITICAL, the widest, needs exactly one space.
-    crit_cell = re.search(r"\[ CRITICAL \]( +)", crit)
+    # ...and CRITICAL, the widest, needs the minimum gap of one space.
+    crit_cell = re.search(r"\[CRITICAL\]( +)", crit)
     assert crit_cell and len(crit_cell.group(1)) == 1
 
 
@@ -103,7 +102,7 @@ def test_logger_column_is_wide_enough_for_every_known_logger():
         line = _render(_record("aisen." + name, logging.INFO, "BODY"))
         # No truncation marker means the frame did not have to cut it.
         assert "…" not in line
-        assert _cells(line)[2] == name
+        assert _bodies(line)[2] == name
 
 
 # ---- zones ------------------------------------------------------------------

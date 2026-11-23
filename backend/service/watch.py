@@ -37,11 +37,11 @@ def _log(message: str) -> None:
     sidecar and must not pull in chromadb or the embedding model to run.
     """
     stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    # Same frame as `common.logging_setup.TextFormatter`: exactly one space
-    # inside each bracket, the gap after it absorbing the width difference.
+    # Same frame as `common.logging_setup.TextFormatter`: nothing inside a
+    # bracket but the value, all padding in the gap after it.
     # A literal because this module is stdlib-only by design; keep in step.
     print(
-        f"[ {stamp} ] [ INFO ]     [ watch ]    {message}",
+        f"[{stamp}] [INFO]     [watch]    {message}",
         flush=True,
     )
 

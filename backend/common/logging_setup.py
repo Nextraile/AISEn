@@ -11,13 +11,15 @@ consistent and makes the output swappable:
 
 Text output puts the frame in brackets and the data in `key=value` pairs:
 
-    [ 15:25:33 ] [ INFO ]     [ ingest ]    harvest complete  valid=47945
+    [15:25:33] [INFO]     [ingest]   harvest complete  valid=47945
 
-The bracket rule is fixed: exactly one space inside each bracket, never more.
-The gap after the closing bracket is what aligns the columns, so `[ INFO ]` is
-followed by more spaces than `[ CRITICAL ]` while the message still lands on the
-same column. Padding inside the brackets would read as if the blanks belonged to
-the value.
+Nothing sits inside a bracket but the value: `[INFO]`, never `[ INFO ]` and
+never `[INFO    ]`. All width lives in the gaps *between* the cells, so a short
+cell is followed by more spaces than a long one and the message still lands on
+the same column:
+
+    [hello]        [world]
+    [this is what] [i mean]
 
 Punctuation is classified by where it sits, not by the character:
 
@@ -50,30 +52,23 @@ DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
 # Every line opens with three framed cells: time, level, logger.
 #
-#     [ 15:25:33 ] [ INFO ]     [ ingest ]    harvesting   valid=250
-#     [ 15:25:33 ] [ CRITICAL ] [ ingest ]    boom
+#     [15:25:33] [INFO]     [ingest]   harvesting   valid=250
+#     [15:25:33] [CRITICAL] [ingest]   boom
 #
-# The rule for a cell is fixed: exactly ONE space inside each bracket, never
-# more. Width differences are absorbed by the gap AFTER the closing bracket, so
-# a short value like `[ INFO ]` is followed by more spaces than `[ CRITICAL ]`.
-# That keeps the inside of every bracket identical and still lands the message
-# on the same column:
-#
-#     [ hello ]        [ world ]
-#     [ this is what ] [ i mean ]
-#
-# Padding inside the brackets would look like `[ INFO     ]`, which reads as if
-# the trailing blanks belonged to the value.
+# Nothing sits inside a bracket but the value - no inner space at all, so the
+# value touches both `[` and `]`. Every space lives in the gap AFTER the closing
+# bracket, which is what lines the columns up: `[INFO]` is followed by more
+# spaces than `[CRITICAL]`, and the message still starts on the same column.
 def _cell(value: str) -> str:
-    """Frame a value with exactly one space on each side. No inner padding."""
-    return "[ {} ]".format(value)
+    """Frame a value tightly: nothing between the brackets but the value."""
+    return "[{}]".format(value)
 
 
 # Column widths are derived from a CLOSED set of known values, not from
 # whatever a line happens to contain. If a width came from the line itself,
-# `[ INFO ]` and `[ CRITICAL ]` would make their own lines different widths and
-# the message column would wander - the asymmetry this shape exists to remove.
-# A value longer than the set is truncated in `_cell`, so it cannot push the
+# `[INFO]` and `[CRITICAL]` would make their own lines different widths and the
+# message column would wander - the asymmetry this shape exists to remove.
+# A value longer than the set is truncated before framing, so it cannot push the
 # column either.
 LEVEL_VALUES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 LOGGER_VALUES = (
@@ -146,10 +141,10 @@ def _is_noise(record: logging.LogRecord) -> bool:
 
 
 class TextFormatter(logging.Formatter):
-    """`[ time ] [ LEVEL ] [ logger ] message key=value` for a terminal.
+    """`[time] [LEVEL] [logger] message key=value` for a terminal.
 
-    One space inside every bracket, always; the gap after each closing bracket
-    is what aligns the columns. Data stays `key=value` so it is greppable, and a
+    Nothing is padded inside a bracket; the gap after each closing bracket is
+    what aligns the columns. Data stays `key=value` so it is greppable, and a
     value is quoted only when it would otherwise break the line. Exception
     tracebacks are NOT indented - a traceback read from a wrapped terminal is
     worse than a long line.
