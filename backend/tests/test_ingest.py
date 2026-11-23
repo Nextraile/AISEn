@@ -62,6 +62,17 @@ def test_harvest_rejects_bad_target(tmp_path):
         ingest.harvest(target=0, output=tmp_path / "clean.json", records=[])
 
 
+def test_harvest_drops_empty_creator_entries(tmp_path):
+    # An empty <dc:creator/> reaches us as None inside the list. The full-corpus
+    # harvest contains such records, and joining them used to abort the index.
+    items = ingest.harvest(
+        target=10,
+        output=tmp_path / "clean.json",
+        records=[FakeRecord(make_metadata("Judul", "a" * 60, creators=[None, "A"]))],
+    )
+    assert items[0]["creators"] == ["A"]
+
+
 # ---------- index ----------
 class FakeEmbeddings(list):
     def tolist(self):
@@ -146,6 +157,27 @@ def test_build_index_tolerates_missing_collection(tmp_path):
     assert ingest.build_index(
         json_path=_write_json(tmp_path), model=FakeModel(), client=client
     ) == 3
+
+
+def test_build_index_survives_null_creator_in_json(tmp_path):
+    # JSON harvested by an older build can still contain nulls; rebuilding from
+    # it must not crash after the model has already been loaded.
+    data = [
+        {
+            "title": "Judul",
+            "creators": [None, "A"],
+            "description": "abstrak",
+            "url": "http://x/1.pdf",
+            "date": "2024",
+        }
+    ]
+    json_path = tmp_path / "clean.json"
+    json_path.write_text(json.dumps(data), encoding="utf-8")
+
+    client = FakeClient()
+    ingest.build_index(json_path=json_path, model=FakeModel(), client=client)
+
+    assert client.collection.batches[0]["metadatas"][0]["creators"] == "A"
 
 
 def test_build_index_rejects_empty_json(tmp_path):

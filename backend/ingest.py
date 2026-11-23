@@ -43,12 +43,22 @@ log = logging.getLogger("aisen.ingest")
 
 # ---- helpers ---------------------------------------------------------------
 def _as_list(value) -> list[str]:
-    """OAI fields are usually lists, but tolerate a bare string/None."""
+    """OAI fields are usually lists, but tolerate a bare string/None.
+
+    Empty entries are dropped. A record can carry an empty ``<dc:creator/>``,
+    which arrives as ``None`` inside the list; ``", ".join(...)`` on that raises
+    TypeError and aborts the whole index build.
+    """
     if value is None:
         return []
-    if isinstance(value, str):
-        return [value]
-    return list(value)
+    values = [value] if isinstance(value, str) else list(value)
+
+    cleaned: list[str] = []
+    for entry in values:
+        text = "" if entry is None else str(entry).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
 
 
 def _first(value, default: str = "") -> str:
