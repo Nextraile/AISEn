@@ -14,7 +14,7 @@ import os
 import re
 import time
 import uuid
-from contextlib import asynccontextmanage
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -144,7 +144,7 @@ def _load_model(target_app: FastAPI) -> None:
 
     # Imported here so tests that inject a fake model never pay for the torch
     # import, and so uvicorn logs the DB check above before the slow step.
-    from sentence_transformers import SentenceTransforme
+    from sentence_transformers import SentenceTransformer
 
     target_app.state.model = SentenceTransformer(SETTINGS.model_name)
     log.info("Embedding model ready.")
@@ -160,7 +160,7 @@ def _load_model(target_app: FastAPI) -> None:
         log.info("AI summaries enabled with Gemini model '%s'.", gemini_model)
 
 
-@asynccontextmanage
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.started_at = time.monotonic()
     _log_configuration()
@@ -256,15 +256,15 @@ class SearchRequest(BaseModel):
 class SearchResult(BaseModel):
     peringkat: int  # 1-based position after threshold filtering
     skor: float  # similarity, higher = close
-    judul: st
-    penulis: st
-    deskripsi: st
-    url: st
-    date: st
+    judul: str
+    penulis: str
+    deskripsi: str
+    url: str
+    date: str
 
 
 class SearchResponse(BaseModel):
-    query: st
+    query: str
     threshold: float
     count: int
     results: list[SearchResult]

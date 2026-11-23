@@ -376,7 +376,7 @@ def test_llm_not_configured(monkeypatch):
 
 class _FakeModels:
     def __init__(self, behavior):
-        self.behavior = behavio
+        self.behavior = behavior
 
     def generate_content(self, model, contents):
         return self.behavior()

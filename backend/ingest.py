@@ -24,7 +24,7 @@ import logging
 import os
 import sys
 import time
-from contextlib import contextmanage
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
@@ -61,7 +61,7 @@ class IngestLocked(RuntimeError):
     """Another ingest already holds the single-writer lock."""
 
 
-@contextmanage
+@contextmanager
 def ingest_lock(path: Path | None = None) -> Iterator[None]:
     """Refuse to run two ingests against the same directory.
 
@@ -306,7 +306,7 @@ def build_index(
         raise ValueError(f"{json_path} is empty: run --harvest first")
 
     if model is None:
-        from sentence_transformers import SentenceTransforme
+        from sentence_transformers import SentenceTransformer
 
         model = SentenceTransformer(SETTINGS.model_name)
 
@@ -369,7 +369,7 @@ def query_demo(
 ) -> list[dict]:
     """Sanity-check the index with the same ranking code as POST /search."""
     if model is None:
-        from sentence_transformers import SentenceTransforme
+        from sentence_transformers import SentenceTransformer
 
         model = SentenceTransformer(SETTINGS.model_name)
 
@@ -437,7 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=SETTINGS.threshold_default,
         help="minimum similarity for --query",
     )
-    return parse
+    return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
