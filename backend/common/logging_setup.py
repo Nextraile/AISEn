@@ -9,26 +9,27 @@ consistent and makes the output swappable:
 - `LOG_FILE=logs/ingest.log` — also append to a file, so a `docker compose run
   --rm` container cannot take the only copy of the log with it.
 
-Text output puts the frame in brackets and the data in `key=value` pairs:
+Text output is a tight frame, then a phrase, then the data:
 
-    [15:25:33] [INFO]     [ingest]   harvest complete  valid=47945
+    [15:25:33.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
 
-Nothing sits inside a bracket but the value: `[INFO]`, never `[ INFO ]` and
-never `[INFO    ]`. All width lives in the gaps *between* the cells, so a short
-cell is followed by more spaces than a long one and the message still lands on
-the same column:
-
-    [hello]        [world]
-    [this is what] [i mean]
+One space between cells and nothing inside a bracket: `[INFO]`, never
+`[ INFO ]`. There is no column padding, because the `:` after the last bracket is
+a stronger anchor than a lined-up column and it costs nothing:
+`[hello] [world]`. The consequence is that the message column shifts by a few
+characters as the level name changes width — that is accepted, not a bug.
 
 Punctuation is classified by where it sits, not by the character:
 
-- frame (`[ ]`) - the three cells every line has; the formatter owns and pads it
-- data (`=`) - `key=value`, bare, never padded
+- frame (`[ ]`) - the three cells every line has; the formatter owns it
+- dividers (`]: `, ` | `, `, `) - line-level structure, always the separator and
+  never a value: `]: ` starts the phrase, ` | ` starts the data, `, ` splits pairs
+- data (`=`) - `key=value`, bare
 - value - passed through byte-for-byte; a `:` in `TypeError: bad`, a `{}` in a
   metadata repr and a `%` in `pct=52%` are content, not structure. Only
-  whitespace, a quote or a newline forces `json.dumps` quoting, which keeps the
-  line re-parseable and a multi-line error message on one line.
+  whitespace, a quote or a newline forces `json.dumps` quoting, which is also
+  what keeps an unquoted ` | ` unambiguous - a value containing one has
+  whitespace, so it is quoted.
 
 Third-party libraries log through the same handler, and their DEBUG chatter is
 indented so it reads as background.
@@ -50,27 +51,25 @@ from common.config import SETTINGS
 
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
-# Every line opens with three framed cells: time, level, logger.
+# Every line opens with three framed cells, then `: `, then the phrase:
 #
-#     [15:25:33] [INFO]     [ingest]   harvesting   valid=250
-#     [15:25:33] [CRITICAL] [ingest]   boom
+#     [15:25:33.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
+#     [15:25:33.123] [CRITICAL] [ingest]: boom
 #
 # Nothing sits inside a bracket but the value - no inner space at all, so the
-# value touches both `[` and `]`. Every space lives in the gap AFTER the closing
-# bracket, which is what lines the columns up: `[INFO]` is followed by more
-# spaces than `[CRITICAL]`, and the message still starts on the same column.
+# value touches both `[` and `]`. There is no column padding either: the `:` after
+# the last bracket is the anchor the eye lands on, which reads better than a
+# lined-up column and costs nothing. The trade is that the phrase starts a few
+# characters later on a `[CRITICAL]` line than on an `[INFO]` one. That is
+# accepted; padding it back out is what made the old shape ugly.
 def _cell(value: str) -> str:
     """Frame a value tightly: nothing between the brackets but the value."""
     return "[{}]".format(value)
 
 
-# Column widths are derived from a CLOSED set of known values, not from
-# whatever a line happens to contain. If a width came from the line itself,
-# `[INFO]` and `[CRITICAL]` would make their own lines different widths and the
-# message column would wander - the asymmetry this shape exists to remove.
-# A value longer than the set is truncated before framing, so it cannot push the
-# column either.
-LEVEL_VALUES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+# Longest logger name the frame will print. Names longer than this are cut, so a
+# surprise third-party logger cannot widen the frame unboundedly. The values are
+# the loggers this project and its main dependencies actually use.
 LOGGER_VALUES = (
     "ingest",
     "search",
@@ -81,18 +80,17 @@ LOGGER_VALUES = (
     "httpx",
     "filelock",
 )
-TIME_CONTENT_WIDTH = len("00:00:00")
-LEVEL_CONTENT_WIDTH = max(len(value) for value in LEVEL_VALUES)
 LOGGER_CONTENT_WIDTH = max(len(value) for value in LOGGER_VALUES)
 
-TIME_COLUMN = len(_cell("0" * 8))
-LEVEL_COLUMN = len(_cell("X" * LEVEL_CONTENT_WIDTH))
-LOGGER_COLUMN = len(_cell("X" * LOGGER_CONTENT_WIDTH))
+# The stamp is `HH:MM:SS.mmm` - 12 characters. `strftime` has no `%f`, so the
+# milliseconds come from the record; this constant is only the width, used by the
+# tests and by `watch.py`, which builds the frame by hand.
+TIMESTAMP_WIDTH = len("15:25:33.123")
 
 # Third-party DEBUG lines are background noise during an ingest: 87% of a real
 # run. They are kept - dropping them would hide genuine transport failures - but
-# indented and shortened so the application's own lines stand out. They share
-# the same three column widths, so their frames line up with ours.
+# indented and shortened so the application's own lines stand out. They use the
+# same frame, so their cells line up with ours.
 NOISE_INDENT = "  "
 NOISE_MESSAGE_WIDTH = 100
 
@@ -141,25 +139,28 @@ def _is_noise(record: logging.LogRecord) -> bool:
 
 
 class TextFormatter(logging.Formatter):
-    """`[time] [LEVEL] [logger] message key=value` for a terminal.
+    """`[time] [LEVEL] [logger]: phrase | key=value, key=value` for a terminal.
 
-    Nothing is padded inside a bracket; the gap after each closing bracket is
-    what aligns the columns. Data stays `key=value` so it is greppable, and a
-    value is quoted only when it would otherwise break the line. Exception
-    tracebacks are NOT indented - a traceback read from a wrapped terminal is
-    worse than a long line.
+    Nothing is padded inside a bracket and no column is padded either; the `:` is
+    the anchor. Data stays `key=value` so it is greppable, and a value is quoted
+    only when it would otherwise break the line. Exception tracebacks are NOT
+    indented - a traceback read from a wrapped terminal is worse than a long line.
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        # Local time, seconds only: the date is in the file name and `+0000` adds
-        # nine characters a human never reads.
-        stamp = self.formatTime(record, "%H:%M:%S")
+        # Local time to the millisecond: the date is in the file name and `+0000`
+        # adds nine characters a human never reads. `strftime` has no `%f`, so the
+        # milliseconds are appended from `record.msecs` - which is what makes the
+        # stamp a fixed 12 characters.
+        stamp = "{}.{:03d}".format(
+            self.formatTime(record, "%H:%M:%S"), int(record.msecs)
+        )
         service = _service_name(record.name)[:LOGGER_CONTENT_WIDTH]
 
-        head = "{} {} {} ".format(
-            _cell(stamp).ljust(TIME_COLUMN),
-            _cell(record.levelname).ljust(LEVEL_COLUMN),
-            _cell(service).ljust(LOGGER_COLUMN),
+        head = "{} {} {}: ".format(
+            _cell(stamp),
+            _cell(record.levelname),
+            _cell(service),
         )
 
         if _is_noise(record):
@@ -170,16 +171,53 @@ class TextFormatter(logging.Formatter):
                 message = message[: NOISE_MESSAGE_WIDTH - 1] + "…"
             line = NOISE_INDENT + head + message
         else:
-            parts = [record.getMessage()]
-            for name in _STRUCTURED_FIELDS:
-                value = getattr(record, name, None)
-                if value is not None:
-                    parts.append(_pair(name, value))
-            line = head + " ".join(parts)
+            line = head + _phrase(record) + _data(record)
 
         if record.exc_info:
             line = line + "\n" + self.formatException(record.exc_info)
         return line
+
+
+# Keys `_data` renders, in the order the call site lists them. Anything else on
+# the record (including `extra_data`, which carries the pairs for the text form)
+# stays out of the visible line.
+_TEXT_KEYS = (
+    "request_id",
+    "method",
+    "path",
+    "status",
+    "duration_ms",
+    "documents",
+    "stage",
+)
+
+
+def _phrase(record: logging.LogRecord) -> str:
+    """The human sentence: what happened, with no data glued into it."""
+    return record.getMessage()
+
+
+def _data(record: logging.LogRecord) -> str:
+    """` | k=v, k=v` built from the call site's `extra_data` dict.
+
+    `extra_data` is one dict rather than a pile of keyword arguments because the
+    phrase must not contain the data any more: the formatter joins the pairs, so
+    a call site cannot forget the comma or drift out of the agreed shape.
+    """
+    pairs = list(getattr(record, "extra_data", None) or {})
+    # Legacy structured attributes, kept so an older call site still renders.
+    pairs.extend(name for name in _TEXT_KEYS if getattr(record, name, None) is not None)
+    if not pairs:
+        return ""
+    return " | " + ", ".join(_pair(name, _field_value(record, name)) for name in pairs)
+
+
+def _field_value(record: logging.LogRecord, name: str) -> object:
+    """Read one data field from `extra_data`, falling back to the record."""
+    extra = getattr(record, "extra_data", None) or {}
+    if name in extra:
+        return extra[name]
+    return getattr(record, name)
 
 
 def _pair(key: str, value: object) -> str:
@@ -198,7 +236,13 @@ def _pair(key: str, value: object) -> str:
 
 
 class JsonFormatter(logging.Formatter):
-    """One JSON object per line: timestamp, level, logger, message, extras."""
+    """One JSON object per line: timestamp, level, logger, message, extras.
+
+    `extra_data` is spread into the top level rather than nested under its own
+    key, so `valid=250` in the text form and `{"valid": 250}` here are the same
+    field at the same depth - a collector reads one shape whichever formatter is
+    active.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
@@ -207,7 +251,10 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        payload.update(getattr(record, "extra_data", None) or {})
         for name in _STRUCTURED_FIELDS:
+            if name == "extra_data":
+                continue
             value = getattr(record, name, None)
             if value is not None:
                 payload[name] = value

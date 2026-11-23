@@ -65,16 +65,17 @@ def _uptime_seconds(target_app: FastAPI) -> float | None:
 
 def _log_configuration() -> None:
     log.info(
-        "configuration      model=%s collection=%s db=%s n_results=%d "
-        "threshold=%.2f llm_timeout=%ss log_level=%s log_format=%s",
-        SETTINGS.model_name,
-        SETTINGS.collection_name,
-        SETTINGS.db_path,
-        SETTINGS.n_results,
-        SETTINGS.threshold_default,
-        SETTINGS.llm_timeout_seconds,
-        SETTINGS.log_level,
-        SETTINGS.log_format,
+        "configuration",
+        extra={"extra_data": {
+            "model": SETTINGS.model_name,
+            "collection": SETTINGS.collection_name,
+            "db": SETTINGS.db_path,
+            "n_results": SETTINGS.n_results,
+            "threshold": SETTINGS.threshold_default,
+            "llm_timeout": "{}s".format(SETTINGS.llm_timeout_seconds),
+            "log_level": SETTINGS.log_level,
+            "log_format": SETTINGS.log_format,
+        }},
     )
 
 
@@ -82,7 +83,7 @@ def _open_collection(target_app: FastAPI) -> None:
     """Open the Chroma collection and warn about anything that would make scores meaningless."""
     # Log before touching the DB: on a network share (e.g. \\wsl.localhost from
     # Windows) SQLite can hang silently, and this line marks where it stopped.
-    log.info("opening database   path=%s", SETTINGS.db_path)
+    log.info("opening database", extra={"extra_data": {"path": SETTINGS.db_path}})
     client = chromadb.PersistentClient(path=SETTINGS.db_path)
 
     try:
@@ -99,26 +100,31 @@ def _open_collection(target_app: FastAPI) -> None:
     collection = target_app.state.collection
     total_documents = collection.count()
     log.info(
-        "database ready     documents=%d collection=%s path=%s",
-        total_documents,
-        SETTINGS.collection_name,
-        SETTINGS.db_path,
+        "database ready",
+        extra={"extra_data": {
+            "documents": total_documents,
+            "collection": SETTINGS.collection_name,
+            "path": SETTINGS.db_path,
+        }},
     )
     if total_documents == 0:
         log.warning(
             "collection is EMPTY, every search will return no_results even "
-            "though the startup checks pass  collection=%s fix=%s",
-            SETTINGS.collection_name,
-            "python -m ingestion.ingest --all (or the tools profile)",
+            "though the startup checks pass",
+            extra={"extra_data": {
+                "collection": SETTINGS.collection_name,
+                "fix": "python -m ingestion.ingest --all (or the tools profile)",
+            }},
         )
 
     metadata = collection.metadata or {}
     if metadata.get("hnsw:space") != "cosine":
         log.warning(
-            "collection does not use cosine space, similarity scores are "
-            "meaningless  collection=%s hnsw_space=%s",
-            SETTINGS.collection_name,
-            metadata.get("hnsw:space") or "unset",
+            "collection does not use cosine space, similarity scores are meaningless",
+            extra={"extra_data": {
+                "collection": SETTINGS.collection_name,
+                "hnsw_space": metadata.get("hnsw:space") or "unset",
+            }},
         )
 
     # Stored vectors and query vectors must come from the same model. Changing
@@ -128,19 +134,23 @@ def _open_collection(target_app: FastAPI) -> None:
     if recorded_model and recorded_model != SETTINGS.model_name:
         log.warning(
             "collection was built with a different model, re-run "
-            "`python -m ingestion.ingest --index`  collection=%s "
-            "built_with=%s embedding_model=%s",
-            SETTINGS.collection_name,
-            recorded_model,
-            SETTINGS.model_name,
+            "`python -m ingestion.ingest --index`",
+            extra={"extra_data": {
+                "collection": SETTINGS.collection_name,
+                "built_with": recorded_model,
+                "embedding_model": SETTINGS.model_name,
+            }},
         )
 
 
 def _load_model(target_app: FastAPI) -> None:
     """Create the embedding model and pick up the optional LLM configuration."""
     log.info(
-        "loading model      model=%s (the first download can take a while)",
-        SETTINGS.model_name,
+        "loading model",
+        extra={"extra_data": {
+            "model": SETTINGS.model_name,
+            "note": "the first download can take a while",
+        }},
     )
 
     # Imported here so tests that inject a fake model never pay for the torch
@@ -148,18 +158,17 @@ def _load_model(target_app: FastAPI) -> None:
     from sentence_transformers import SentenceTransformer
 
     target_app.state.model = SentenceTransformer(SETTINGS.model_name)
-    log.info("model ready        model=%s", SETTINGS.model_name)
+    log.info("model ready", extra={"extra_data": {"model": SETTINGS.model_name}})
     target_app.state.summarize = summarize_with_llm
 
     gemini_model = os.getenv("GEMINI_MODEL")
     if not (os.getenv("GEMINI_API_KEY") and gemini_model):
         log.warning(
-            "AI summaries disabled, the API returns the journal list only  "
-            "reason=%s",
-            "GEMINI_API_KEY / GEMINI_MODEL are not set",
+            "AI summaries disabled, the API returns the journal list only",
+            extra={"extra_data": {"reason": "GEMINI_API_KEY / GEMINI_MODEL are not set"}},
         )
     else:
-        log.info("AI summaries enabled  gemini_model=%s", gemini_model)
+        log.info("AI summaries enabled", extra={"extra_data": {"gemini_model": gemini_model}})
 
 
 @asynccontextmanager
@@ -202,23 +211,26 @@ async def request_context(request: Request, call_next):
         response = await call_next(request)
     except Exception:  # noqa: BLE001 - logged with the id, re-raised to the handle
         log.exception(
-            "request failed     request_id=%s method=%s path=%s",
-            request_id,
-            request.method,
-            request.url.path,
+            "request failed",
+            extra={"extra_data": {
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+            }},
         )
         raise
 
     duration_ms = (time.perf_counter() - started) * 1000
     response.headers["X-Request-ID"] = request_id
     log.info(
-        "request            request_id=%s method=%s path=%s status=%d "
-        "duration_ms=%.0f",
-        request_id,
-        request.method,
-        request.url.path,
-        response.status_code,
-        duration_ms,
+        "request",
+        extra={"extra_data": {
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(duration_ms),
+        }},
     )
     return response
 
@@ -227,7 +239,11 @@ async def request_context(request: Request, call_next):
 async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     """Turn an unexpected error into a JSON 500 that carries the request id."""
     request_id = getattr(request.state, "request_id", "-")
-    log.exception("unhandled error    request_id=%s", request_id, exc_info=exc)
+    log.exception(
+        "unhandled error",
+        extra={"extra_data": {"request_id": request_id}},
+        exc_info=exc,
+    )
     return JSONResponse(
         status_code=500,
         content={
@@ -334,7 +350,7 @@ def sanitize_citations(text: str, valid: set[int]) -> str:
         kept = [n for n in numbers if n in valid]
         dropped = [n for n in numbers if n not in valid]
         if dropped:
-            log.warning("dropped invalid citations  citations=%s", dropped)
+            log.warning("dropped invalid citations", extra={"extra_data": {"citations": dropped}})
         return " ".join(f"[{n}]" for n in kept)
 
     return _CITATION.sub(keep, text)
@@ -513,14 +529,15 @@ async def _summarize(query: str, results: list[SearchResult]) -> str:
         )
     except asyncio.TimeoutError:
         log.warning(
-            "LLM timed out      timeout=%ss", SETTINGS.llm_timeout_seconds
+            "LLM timed out",
+            extra={"extra_data": {"timeout": "{}s".format(SETTINGS.llm_timeout_seconds)}},
         )
         raise SummaryError("LLM tidak merespons tepat waktu. Coba lagi.") from None
     except LLMError as exc:
-        log.warning("LLM failed         reason=%s", exc)
+        log.warning("LLM failed", extra={"extra_data": {"reason": exc}})
         raise SummaryError(str(exc)) from exc
     except Exception:
-        log.exception("LLM failed         reason=unexpected error")
+        log.exception("LLM failed", extra={"extra_data": {"reason": "unexpected error"}})
         raise SummaryError("Ringkasan gagal dibuat. Coba lagi.") from None
 
 
@@ -557,13 +574,14 @@ async def search(payload: SearchRequest, request: Request) -> SearchResponse:
             ringkasan_error = str(exc)
 
     log.info(
-        "search             request_id=%s status=%s count=%d threshold=%.2f "
-        "duration_ms=%.0f",
-        getattr(request.state, "request_id", "-"),
-        status,
-        len(results),
-        payload.threshold,
-        (time.perf_counter() - started) * 1000,
+        "search",
+        extra={"extra_data": {
+            "request_id": getattr(request.state, "request_id", "-"),
+            "status": status,
+            "count": len(results),
+            "threshold": round(payload.threshold, 2),
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+        }},
     )
 
     return SearchResponse(

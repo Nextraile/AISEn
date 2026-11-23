@@ -230,7 +230,7 @@ def harvest(
 
         items.append(record_to_item(metadata))
         if len(items) % every == 0:
-            log.info("harvesting         valid=%d scanned=%d", len(items), scanned)
+            log.info("harvesting", extra={"extra_data": {"valid": len(items), "scanned": scanned}})
         if len(items) >= target:
             break
 
@@ -240,7 +240,8 @@ def harvest(
         json.dump(items, handle, ensure_ascii=False, indent=2)
 
     log.info(
-        "harvest complete   valid=%d scanned=%d out=%s", len(items), scanned, path
+        "harvest complete",
+        extra={"extra_data": {"valid": len(items), "scanned": scanned, "out": path}},
     )
     return items
 
@@ -274,12 +275,13 @@ def _encode_in_chunks(
         rate = done / elapsed if elapsed > 0 else 0.0
         eta = (total - done) / rate if rate > 0 else 0.0
         log.info(
-            "embedding          done=%d/%d pct=%.0f%% rate=%.1f/s eta=%s",
-            done,
-            total,
-            100.0 * done / total,
-            rate,
-            _format_duration(eta),
+            "embedding",
+            extra={"extra_data": {
+                "done": "{}/{}".format(done, total),
+                "pct": "{:.0f}%".format(100.0 * done / total),
+                "rate": "{:.1f}/s".format(rate),
+                "eta": _format_duration(eta),
+            }},
         )
 
     return vectors
@@ -323,10 +325,12 @@ def build_index(
         ids.append(f"doc_{idx}")
 
     log.info(
-        "embedding          documents=%d chunk=%d batch=%d",
-        len(ids),
-        embed_chunk_size or SETTINGS.embed_chunk_size,
-        SETTINGS.embed_batch_size,
+        "embedding",
+        extra={"extra_data": {
+            "documents": len(ids),
+            "chunk": embed_chunk_size or SETTINGS.embed_chunk_size,
+            "batch": SETTINGS.embed_batch_size,
+        }},
     )
     embeddings = _encode_in_chunks(model, documents, embed_chunk_size)
 
@@ -349,10 +353,10 @@ def build_index(
             metadatas=metadatas[start:end],
             documents=documents[start:end],
         )
-        log.info("storing            done=%d/%d", end, len(ids))
+        log.info("storing", extra={"extra_data": {"done": "{}/{}".format(end, len(ids))}})
 
     total = collection.count()
-    log.info("index complete     documents=%d metadata=%s", total, collection.metadata)
+    log.info("index complete", extra={"extra_data": {"documents": total, "metadata": collection.metadata}})
     return total
 
 
@@ -459,9 +463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.all or args.harvest:
                 stage = "harvest"
                 log.info(
-                    "ingest start       stage=harvest target=%d endpoint=%s",
-                    args.target,
-                    args.endpoint,
+                    "ingest start",
+                    extra={"extra_data": {"stage": "harvest", "target": args.target, "endpoint": args.endpoint}},
                 )
                 counts["records"] = len(
                     harvest(
@@ -472,22 +475,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
                 log.info(
-                    "stage complete     stage=harvest records=%d took=%s",
-                    counts["records"],
-                    _format_duration(elapsed()),
+                    "stage complete",
+                    extra={"extra_data": {
+                        "stage": "harvest",
+                        "records": counts["records"],
+                        "took": _format_duration(elapsed()),
+                    }},
                 )
             if args.all or args.index:
                 stage = "index"
-                log.info("stage start        stage=index source=%s db=%s", args.json, args.db)
+                log.info(
+                    "stage start",
+                    extra={"extra_data": {"stage": "index", "source": args.json, "db": args.db}},
+                )
                 counts["documents"] = build_index(
                     json_path=args.json,
                     db_path=args.db,
                     embed_chunk_size=args.embed_chunk_size,
                 )
                 log.info(
-                    "stage complete     stage=index documents=%d took=%s",
-                    counts["documents"],
-                    _format_duration(elapsed()),
+                    "stage complete",
+                    extra={"extra_data": {
+                        "stage": "index",
+                        "documents": counts["documents"],
+                        "took": _format_duration(elapsed()),
+                    }},
                 )
             if args.query:
                 stage = "query"
@@ -502,15 +514,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         file=sys.stderr,
                     )
     except IngestLocked as error:
-        log.error("INGEST REFUSED     reason=%s", error)
+        log.error("INGEST REFUSED", extra={"extra_data": {"reason": error}})
         return 2
     except Exception as error:  # noqa: BLE001 - the last line must state the cause
         log.error(
-            "INGEST FAILED      stage=%s after=%s error=%s: %s",
-            stage,
-            _format_duration(elapsed()),
-            type(error).__name__,
-            error,
+            "INGEST FAILED",
+            extra={"extra_data": {
+                "stage": stage,
+                "after": _format_duration(elapsed()),
+                "error": "{}: {}".format(type(error).__name__, error),
+            }},
             exc_info=True,
         )
         _write_run_summary(
@@ -531,9 +544,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         counts=counts,
     )
     log.info(
-        "ingest complete    took=%s %s",
-        _format_duration(elapsed()),
-        " ".join(f"{name}={value}" for name, value in counts.items()) or "counts=0",
+        "ingest complete",
+        extra={"extra_data": {
+            "took": _format_duration(elapsed()),
+            **{name: value for name, value in counts.items()},
+        }},
     )
     return 0
 

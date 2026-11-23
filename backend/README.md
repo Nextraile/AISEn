@@ -263,27 +263,27 @@ hang:
 
 - **Ingestion** logs a harvest line every `PROGRESS_EVERY` records and an encode
   line per `EMBED_CHUNK_SIZE` documents, including rate and ETA
-  (`embedding          done=25000/47915 pct=52% rate=19.3/s eta=19m`). Each
-  stage is timed, and the run ends with
-  `ingest complete    took=41m12s records=47915 documents=47915` or
-  `INGEST FAILED      stage=index after=2m03s error=TypeError: …`.
-- **Log shape.** Terminal lines open with three framed cells — time, level,
-  logger — then the message and its `key=value` data:
+  (`embedding | done=25000/47915, pct=52%, rate=19.3/s, eta=19m`). Each stage is
+  timed, and the run ends with `ingest complete | took=41m12s, records=47915` or
+  `INGEST FAILED | stage=index, after=2m03s, error="TypeError: …"`.
+- **Log shape.** Terminal lines are a frame, a phrase, then the data:
 
   ```
-  [07:44:54] [INFO]     [ingest]   harvest complete  valid=47945 scanned=55575
-  [07:44:54] [WARNING]  [ingest]   collection is empty
-  [07:44:54] [CRITICAL] [ingest]   boom
+  [07:44:54.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
+  [07:44:54.124] [WARNING] [ingest]: collection is empty
+  [07:44:54.125] [CRITICAL] [ingest]: boom
   ```
 
-  Nothing sits inside a bracket but the value; the gap *after* the closing
-  bracket is what aligns the columns, so `[INFO]` is followed by more spaces than
-  `[CRITICAL]` and the message still starts at the same column. Punctuation is
-  classified by where it sits, not by the character: the frame is structure,
-  `key=value` pairs are data, and inside a value everything is passed through
-  byte-for-byte — a `:` in `TypeError: x`, a `{}` in a metadata repr and a `%` in
-  `pct=52%` are content. A value is quoted only when it holds a space, a quote or
-  a newline, which keeps a multi-line error message on one line. Third-party
+  Three tight cells (`[INFO]`, never `[ INFO ]`), one space between them, `: `
+  before the phrase, ` | ` before the data, `, ` between pairs. Nothing is padded
+  to a column: the `:` is the anchor the eye lands on, and the phrase starts a few
+  characters later on a `[CRITICAL]` line than on an `[INFO]` one — that is the
+  trade for a shorter, simpler line. Punctuation is classified by where it sits:
+  the frame and the three dividers are structure; `key=value` is data; inside a
+  value everything is passed through byte-for-byte — a `:` in `TypeError: x`, a
+  `{}` in a metadata repr and a `%` in `pct=52%` are content. A value is quoted
+  only when it holds a space, a quote or a newline, which keeps a multi-line error
+  message on one line and keeps an unquoted ` | ` unambiguous. Third-party
   libraries log through the same handler; their DEBUG chatter is indented so it
   reads as background. Use `LOG_FORMAT=json` when a collector is reading, not a
   person.

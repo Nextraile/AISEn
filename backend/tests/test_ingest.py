@@ -282,7 +282,13 @@ def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, cap
         code = ingest.main(["--harvest"])
 
     assert code == 1
-    assert "INGEST FAILED      stage=harvest" in caplog.text
+    # The rendered line is `[time] [ERROR] [ingest]: INGEST FAILED | stage=...`.
+    # `caplog.text` goes through pytest's own handler, so assert on the record's
+    # data rather than the formatted string, which is the formatter's business.
+    failed = [r for r in caplog.records if r.getMessage() == "INGEST FAILED"]
+    assert failed, caplog.text
+    assert failed[0].extra_data["stage"] == "harvest"
+    assert failed[0].extra_data["error"].startswith("TypeError: sequence item 1")
 
     payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
     assert payload["status"] == "failed"

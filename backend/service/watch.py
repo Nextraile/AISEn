@@ -36,12 +36,13 @@ def _log(message: str) -> None:
     `watch.py` deliberately imports nothing from the package: it is a liveness
     sidecar and must not pull in chromadb or the embedding model to run.
     """
-    stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    # Same frame as `common.logging_setup.TextFormatter`: nothing inside a
-    # bracket but the value, all padding in the gap after it.
-    # A literal because this module is stdlib-only by design; keep in step.
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%H:%M:%S") + ".{:03d}".format(now.microsecond // 1000)
+    # Same frame as `common.logging_setup.TextFormatter`: one space between
+    # cells, nothing inside a bracket, `: ` before the message. A literal
+    # because this module is stdlib-only by design; keep it in step.
     print(
-        f"[{stamp}] [INFO]     [watch]    {message}",
+        f"[{stamp}] [INFO] [watch]: {message}",
         flush=True,
     )
 
