@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 import chromadb
+import numpy as np
 
 from service.app import rank_results
 from common.log import configure_logging
@@ -516,14 +517,103 @@ def harvest(
 
 
 # ---- index -----------------------------------------------------------------
+def index_state_path(temp_dir: str | Path | None = None) -> Path:
+    """Where an interrupted index build leaves its phase marker and count."""
+    return Path(temp_dir or SETTINGS.temp_dir) / "index_state.json"
+
+
+def _corpus_fingerprint(json_path: Path, n_documents: int) -> str:
+    """Identify the exact corpus a build was started from.
+
+    A resumed build must not mix vectors from two different harvests: the ids
+    are positional (`doc_<index>`), so re-harvesting can rename what `doc_7`
+    means. Size + mtime of the JSON is enough to notice a rewrite, and it costs
+    one `stat` instead of hashing a 100 MB file.
+    """
+    stat = json_path.stat()
+    return f"{n_documents}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _load_index_state(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _write_index_state(path: Path, payload: dict) -> None:
+    _atomic_write(path, json.dumps(payload, indent=2) + "\n")
+
+
+def _resumable_stored_ids(
+    client,
+    *,
+    fingerprint: str,
+    state: dict | None,
+    fresh: bool,
+    model_name: str,
+) -> set[str]:
+    """The ids already in the collection, if this build may continue from them.
+
+    Returns an empty set when the collection must be rebuilt from scratch, and
+    in that case also deletes it, so the caller only has to add what it is
+    told is missing. Resuming is legitimate only when a previous build of the
+    *same* corpus with the *same* model was interrupted: any other state means
+    the collection is a complete answer to a different question.
+    """
+    if fresh or state is None or state.get("phase") != "building":
+        try:
+            client.delete_collection(name=SETTINGS.collection_name)
+        except chromadb.errors.NotFoundError:
+            pass  # first build: there is nothing to replace
+        return set()
+
+    if state.get("fingerprint") != fingerprint or state.get("model") != model_name:
+        log.info(
+            "index restart",
+            extra={"extra_data": {
+                "reason": "corpus or model changed since the partial build",
+                "started_with": state.get("fingerprint"),
+                "now": fingerprint,
+            }},
+        )
+        try:
+            client.delete_collection(name=SETTINGS.collection_name)
+        except chromadb.errors.NotFoundError:
+            pass
+        return set()
+
+    collection = client.get_or_create_collection(
+        name=SETTINGS.collection_name,
+        metadata={"hnsw:space": "cosine", "embedding_model": SETTINGS.model_name},
+    )
+    stored = set(collection.get(include=[])["ids"])
+    log.info(
+        "index resume",
+        extra={"extra_data": {
+            "stored": len(stored),
+            "target": state.get("target"),
+        }},
+    )
+    return stored
+
+
 def _encode_in_chunks(
-    model, documents: Sequence[str], chunk_size: int | None = None
+    model,
+    documents: Sequence[str],
+    chunk_size: int | None = None,
+    cache_path: Path | None = None,
 ) -> list[list[float]]:
     """Embed `documents` in chunks, logging after each one.
 
     A single `model.encode(...)` over ~48k abstracts is tens of minutes with no
     output, which is indistinguishable from a hang. Encoding in chunks also
     bounds peak memory: the full matrix as Python floats is hundreds of MB.
+
+    Encoding is the longest stage and the one worth resuming, so a build may
+    pass `cache_path`: finished chunks are appended there (see `_append_vectors`)
+    and a rerun skips straight past them. The cache is keyed by caller to one
+    corpus and one model, and it is deleted once the rows are in the collection.
     """
     total = len(documents)
     size = max(1, chunk_size or SETTINGS.embed_chunk_size)
@@ -539,6 +629,8 @@ def _encode_in_chunks(
                 show_progress_bar=False,
             ).tolist()
         )
+        if cache_path is not None:
+            _append_vectors(cache_path, vectors[len(vectors) - len(chunk) :])
         done = len(vectors)
         elapsed = time.monotonic() - started
         rate = done / elapsed if elapsed > 0 else 0.0
@@ -556,6 +648,47 @@ def _encode_in_chunks(
     return vectors
 
 
+def _append_vectors(cache_path: Path, rows: Sequence[Sequence[float]]) -> None:
+    """Append embedded rows to the binary cache, readable by row count alone.
+
+    `float32` is what the model produces anyway, and the row length is stored
+    once so a resumed run can tell how many rows survived a kill: a partial
+    tail is truncated to the last whole row rather than reused as a vector.
+    """
+    width = len(rows[0]) if rows else 0
+    if not width:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    header = cache_path.parent / (cache_path.name + ".width")
+    if not header.exists():
+        header.write_text(str(width), encoding="utf-8")
+    matrix = np.asarray(rows, dtype=np.float32)
+    with cache_path.open("ab") as handle:
+        handle.write(matrix.tobytes())
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _cached_vectors(cache_path: Path, expected_rows: int) -> list[list[float]]:
+    """Read the rows that reached the disk, dropping any partial tail row."""
+    try:
+        width = int((cache_path.parent / (cache_path.name + ".width")).read_text())
+        raw = np.fromfile(cache_path, dtype=np.float32)
+    except (OSError, ValueError):
+        return []
+    if not width or raw.size < width:
+        return []
+    rows = int(raw.size // width)
+    if rows > expected_rows:
+        rows = expected_rows
+    return raw[: rows * width].reshape(rows, width).tolist()
+
+
+def _clear_vectors(cache_path: Path) -> None:
+    cache_path.unlink(missing_ok=True)
+    (cache_path.parent / (cache_path.name + ".width")).unlink(missing_ok=True)
+
+
 def build_index(
     json_path: str | Path = SETTINGS.ingest_json_path,
     db_path: str = SETTINGS.db_path,
@@ -563,21 +696,38 @@ def build_index(
     model=None,
     client=None,
     embed_chunk_size: int | None = None,
+    fresh: bool = False,
+    temp_dir: str | Path | None = None,
 ) -> int:
     """(Re)build the Chroma collection from the harvested JSON.
 
-    Deletes the existing collection first: re-running replaces all vectors,
-    there is no incremental update path. `model` and `client` are injectable
-    for tests.
+    Resumable, in two phases recorded in `data/temp/index_state.json`:
+
+    * `encoding` -- the vectors are being produced. Finished chunks are kept in
+      `data/temp/index_vectors.npy`, so an interrupted embedding run continues
+      from the last complete chunk instead of starting the model again;
+    * `building` -- the vectors are being inserted. Rows already in the
+      collection are read back and skipped, so an interrupted insert resumes
+      without re-embedding anything.
+
+    A resume is only allowed when the state names the same corpus (hash of the
+    JSON's size, mtime and record count) and the same model. Anything else --
+    including `--fresh`, which is the only way to force a rebuild -- deletes the
+    collection and starts over: `doc_<index>` ids are positional, so mixing
+    vectors from two harvests would silently attach the wrong abstract to a
+    vector.
+
+    `model` and `client` are injectable for tests.
     """
-    data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    source = Path(json_path)
+    data = json.loads(source.read_text(encoding="utf-8"))
     if not data:
         raise ValueError(f"{json_path} is empty: run --harvest first")
 
-    if model is None:
-        from sentence_transformers import SentenceTransformer
-
-        model = SentenceTransformer(SETTINGS.model_name)
+    model_name = SETTINGS.model_name
+    fingerprint = _corpus_fingerprint(source, len(data))
+    state_path = index_state_path(temp_dir)
+    cache_path = state_path.parent / "index_vectors.npy"
 
     documents, metadatas, ids = [], [], []
     for idx, item in enumerate(data):
@@ -593,43 +743,139 @@ def build_index(
         )
         ids.append(f"doc_{idx}")
 
+    previous = None if fresh else _load_index_state(state_path)
+    if fresh:
+        _clear_vectors(cache_path)
+        state_path.unlink(missing_ok=True)
+
+    document_count = len(ids)
+
+    # Phase 2 decides what still has to happen, so ask it before encoding: on a
+    # `building`-phase resume the rows already in the collection never need a
+    # vector again, and encoding them would waste the longest stage.
+    client = client or chromadb.PersistentClient(path=db_path)
+    stored = _resumable_stored_ids(
+        client,
+        fingerprint=fingerprint,
+        state=previous,
+        fresh=fresh,
+        model_name=model_name,
+    )
+    todo = [index for index, doc_id in enumerate(ids) if doc_id not in stored]
+
     log.info(
         "embedding",
         extra={"extra_data": {
-            "documents": len(ids),
+            "documents": len(todo),
             "chunk": embed_chunk_size or SETTINGS.embed_chunk_size,
             "batch": SETTINGS.embed_batch_size,
         }},
     )
-    embeddings = _encode_in_chunks(model, documents, embed_chunk_size)
 
-    client = client or chromadb.PersistentClient(path=db_path)
-    try:
-        client.delete_collection(name=SETTINGS.collection_name)
-    except chromadb.errors.NotFoundError:
-        pass  # first build: there is nothing to replace
+    # The vector cache is valid whenever it was written for this exact corpus
+    # and model, whichever phase was interrupted: an insert-phase kill leaves a
+    # *complete* cache behind, and re-encoding those rows would throw away the
+    # cheapest resume the system has. Anything else is wiped, because appending
+    # new rows onto a foreign cache would misalign it against `doc_<index>`.
+    cached: list[list[float]] = []
+    state_matches = previous is not None and (
+        previous.get("fingerprint"),
+        previous.get("model"),
+    ) == (fingerprint, model_name)
+    if state_matches:
+        cached = _cached_vectors(cache_path, document_count)
+        if cached:
+            log.info(
+                "embed resume",
+                extra={"extra_data": {
+                    "cached": len(cached),
+                    "of": document_count,
+                }},
+            )
+    else:
+        _clear_vectors(cache_path)
 
+    if model is None:
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer(model_name)
+
+    # Phase 1: produce the vectors that are still missing.
+    #
+    # The cache always holds a prefix of the corpus (`doc_0`, `doc_1`, ...), so
+    # it composes with `todo`: rows in the cache but already stored are dropped,
+    # and rows past the cache are encoded. That keeps one rule for both kinds of
+    # resume instead of two.
+    cached_rows = len(cached)
+    vectors: dict[int, list[float]] = {
+        index: cached[index] for index in todo if index < cached_rows
+    }
+    wanted = [index for index in todo if index >= cached_rows]
+
+    if wanted:
+        _write_index_state(
+            state_path,
+            {
+                "phase": "encoding",
+                "fingerprint": fingerprint,
+                "model": model_name,
+                "target": document_count,
+                "updated_at": _utc_now(),
+            },
+        )
+        encoded = _encode_in_chunks(
+            model, [documents[index] for index in wanted], embed_chunk_size, cache_path
+        )
+        vectors.update(dict(zip(wanted, encoded)))
+    embeddings = vectors
+
+    # Phase 2: insert. Creating the collection is done before the phase is
+    # recorded, so a crash between the two reads as "nothing to resume from"
+    # rather than as a build whose rows are claimed to exist.
     collection = client.get_or_create_collection(
         name=SETTINGS.collection_name,
-        metadata={"hnsw:space": "cosine", "embedding_model": SETTINGS.model_name},
+        metadata={"hnsw:space": "cosine", "embedding_model": model_name},
+    )
+    _write_index_state(
+        state_path,
+        {
+            "phase": "building",
+            "fingerprint": fingerprint,
+            "model": model_name,
+            "target": document_count,
+            "updated_at": _utc_now(),
+        },
     )
 
-    for start in range(0, len(ids), batch_size):
-        end = min(start + batch_size, len(ids))
-        collection.add(
-            ids=ids[start:end],
-            embeddings=embeddings[start:end],
-            metadatas=metadatas[start:end],
-            documents=documents[start:end],
+    if stored:
+        log.info(
+            "index resume",
+            extra={"extra_data": {"stored": len(stored), "remaining": len(todo)}},
         )
-        log.info("storing", extra={"extra_data": {"done": "{}/{}".format(end, len(ids))}})
+
+    for start in range(0, len(todo), batch_size):
+        window = todo[start : start + batch_size]
+        collection.add(
+            ids=[ids[index] for index in window],
+            embeddings=[embeddings[index] for index in window],
+            metadatas=[metadatas[index] for index in window],
+            documents=[documents[index] for index in window],
+        )
+        log.info(
+            "storing",
+            extra={"extra_data": {"done": "{}/{}".format(len(stored) + start + len(window), document_count)}},
+        )
 
     total = collection.count()
+    # The corpus is in the collection now: the cache and the marker have done
+    # their job, and leaving them behind would let a later run resume against a
+    # build that already finished.
+    _clear_vectors(cache_path)
+    state_path.unlink(missing_ok=True)
     log.info("index complete", extra={"extra_data": {"documents": total, "metadata": collection.metadata}})
     return total
 
 
-# ---- query demo ------------------------------------------------------------
 def query_demo(
     query: str,
     db_path: str = SETTINGS.db_path,
@@ -776,6 +1022,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     json_path=args.json,
                     db_path=args.db,
                     embed_chunk_size=args.embed_chunk_size,
+                    fresh=args.fresh,
                 )
                 log.info(
                     "stage complete",

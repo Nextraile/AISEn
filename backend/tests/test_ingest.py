@@ -471,6 +471,280 @@ def test_build_index_rejects_empty_json(tmp_path):
         ingest.build_index(json_path=json_path, model=FakeModel(), client=FakeClient())
 
 
+class CountingCollection(FakeCollection):
+    """A fake collection that has what the resume logic reads back."""
+
+    def get(self, include):
+        return {"ids": [i for batch in self.batches for i in batch["ids"]]}
+
+
+class CountingClient(FakeClient):
+    def __init__(self, collection=None, fail_after=None, refuse_delete=False):
+        super().__init__()
+        self.collection = collection or CountingCollection()
+        self.fail_after = fail_after
+        self.refuse_delete = refuse_delete
+
+    def delete_collection(self, name):
+        if self.refuse_delete:
+            raise AssertionError("a resume must not delete the collection")
+        super().delete_collection(name)
+
+    def get_or_create_collection(self, name, metadata):
+        self.created_metadata = metadata
+        collection = self.collection
+        client = self
+        fail_after = client.fail_after
+
+        class Guarded:
+            metadata = collection.metadata
+
+            def add(self, ids, embeddings, metadatas, documents):
+                added = collection.count()
+                if fail_after is not None:
+                    remaining = fail_after - added
+                    if remaining <= 0:
+                        raise KeyboardInterrupt("killed mid-insert")
+                    if remaining < len(ids):
+                        collection.add(
+                            ids=ids[:remaining],
+                            embeddings=embeddings[:remaining],
+                            metadatas=metadatas[:remaining],
+                            documents=documents[:remaining],
+                        )
+                        raise KeyboardInterrupt("killed mid-insert")
+                collection.add(
+                    ids=ids,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    documents=documents,
+                )
+
+            def count(self):
+                return collection.count()
+
+            def get(self, include):
+                return collection.get(include)
+
+        return Guarded()
+
+
+def test_index_resume_skips_rows_already_stored(tmp_path):
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    # First run dies after storing 2 of the 4 rows.
+    first = CountingClient(fail_after=2)
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=first,
+            batch_size=2,
+            temp_dir=temp,
+        )
+    assert first.deleted == ingest.SETTINGS.collection_name
+    assert first.collection.count() == 2
+
+    # Second run: same corpus, so it continues. The collection survives and only
+    # the missing rows are embedded and added.
+    model = CountingModel()
+    total = ingest.build_index(
+        json_path=json_path,
+        model=model,
+        client=CountingClient(collection=first.collection, refuse_delete=True),
+        batch_size=2,
+        temp_dir=temp,
+    )
+
+    assert total == 4
+    stored = [i for batch in first.collection.batches for i in batch["ids"]]
+    assert stored == ["doc_0", "doc_1", "doc_2", "doc_3"]
+    # Only the two missing rows were added, and (because the first run had
+    # finished encoding before it died) no document was embedded again.
+    assert model.calls == []
+
+
+def test_index_resume_after_the_encode_phase(tmp_path):
+    # A crash during encoding leaves vectors on disk; the rerun must not start
+    # the model again from scratch.
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    calls = []
+
+    class DyingModel(FakeModel):
+        def encode(self, documents, batch_size=64, show_progress_bar=False):
+            calls.append(list(documents))
+            if len(calls) > 1:
+                raise KeyboardInterrupt("killed mid-encode")
+            return FakeEmbeddings([[1.0, 0.0] for _ in documents])
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=DyingModel(),
+            client=CountingClient(),
+            embed_chunk_size=2,
+            temp_dir=temp,
+        )
+
+    resumed_calls = []
+
+    class ResumedModel(FakeModel):
+        def encode(self, documents, batch_size=64, show_progress_bar=False):
+            resumed_calls.append(list(documents))
+            return FakeEmbeddings([[1.0, 0.0] for _ in documents])
+
+    client = CountingClient()
+    total = ingest.build_index(
+        json_path=json_path,
+        model=ResumedModel(),
+        client=client,
+        embed_chunk_size=2,
+        temp_dir=temp,
+    )
+
+    assert total == 4
+    # Only the two documents whose chunk never finished were encoded.
+    assert resumed_calls == [["Judul 2. abstrak", "Judul 3. abstrak"]]
+    assert client.collection.count() == 4
+
+
+def test_index_restarts_when_the_corpus_changed(tmp_path):
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            batch_size=2,
+            temp_dir=temp,
+        )
+
+    # Same path, different content: `doc_2` may now be a different abstract, so
+    # a partial collection cannot be topped up.
+    _write_json(tmp_path, n=5)
+    client = CountingClient()
+    total = ingest.build_index(
+        json_path=json_path, model=FakeModel(), client=client, temp_dir=temp
+    )
+
+    assert total == 5
+    assert client.deleted == ingest.SETTINGS.collection_name
+    assert [len(b["ids"]) for b in client.collection.batches] == [5]
+
+
+def test_index_restarts_when_the_model_changed(tmp_path, monkeypatch):
+    import dataclasses
+
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            batch_size=2,
+            temp_dir=temp,
+        )
+
+    # A partial collection embedded with another model is not a prefix of this
+    # build: the stored vectors and the query model would disagree.
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(ingest.SETTINGS, model_name="other/model"),
+    )
+    client = CountingClient()
+    total = ingest.build_index(
+        json_path=json_path, model=FakeModel(), client=client, temp_dir=temp
+    )
+
+    assert total == 4
+    assert client.deleted == ingest.SETTINGS.collection_name
+
+
+def test_index_resume_after_an_insert_kill_reuses_the_complete_cache(tmp_path):
+    # A kill during inserting leaves a *finished* encode cache behind. The
+    # resume must use it: re-encoding 48k abstracts because the insert was
+    # interrupted would be the most expensive possible way to recover.
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            embed_chunk_size=2,
+            temp_dir=temp,
+        )
+    state = json.loads((temp / "index_state.json").read_text(encoding="utf-8"))
+    assert state["phase"] == "building"
+    assert (temp / "index_vectors.npy").exists()
+
+    model = CountingModel()
+    ingest.build_index(
+        json_path=json_path,
+        model=model,
+        client=CountingClient(),
+        embed_chunk_size=2,
+        temp_dir=temp,
+    )
+
+    # Nothing was encoded again; the whole cache was reused.
+    assert model.calls == []
+
+
+def test_index_fresh_flag_clears_the_state(tmp_path):
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            batch_size=2,
+            temp_dir=temp,
+        )
+    assert (temp / "index_state.json").exists()
+
+    client = CountingClient()
+    ingest.build_index(
+        json_path=json_path,
+        model=FakeModel(),
+        client=client,
+        fresh=True,
+        temp_dir=temp,
+    )
+
+    assert client.deleted == ingest.SETTINGS.collection_name
+    # The marker and the cache are gone once the build finishes, so a later run
+    # cannot resume against a build that already completed.
+    assert not (temp / "index_state.json").exists()
+    assert not (temp / "index_vectors.npy").exists()
+
+
+def test_successful_index_leaves_no_resume_state(tmp_path):
+    json_path = _write_json(tmp_path)
+    temp = tmp_path / "temp"
+
+    ingest.build_index(
+        json_path=json_path,
+        model=FakeModel(),
+        client=CountingClient(),
+        temp_dir=temp,
+    )
+
+    assert not (temp / "index_state.json").exists()
+    assert not (temp / "index_vectors.npy").exists()
+
+
 class CountingModel(FakeModel):
     def __init__(self):
         self.calls = []
