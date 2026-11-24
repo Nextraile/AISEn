@@ -49,6 +49,7 @@ curl.exe -s http://localhost:8000/ready
 
 # 3. UI -> http://localhost:3000
 cd ..\frontend
+cp .env.example .env     # needed: the fallback is dev-only
 docker compose up -d --build --wait
 ```
 
