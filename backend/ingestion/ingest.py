@@ -951,7 +951,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--harvest", action="store_true", help="harvest OAI-PMH into JSON")
-    parser.add_argument("--index", action="store_true", help="rebuild the Chroma index")
+    parser.add_argument("--index", action="store_true", help="build or resume the Chroma index")
     parser.add_argument("--all", action="store_true", help="harvest, then index")
     parser.add_argument("--query", metavar="TEXT", help="run a query against the index")
     parser.add_argument(

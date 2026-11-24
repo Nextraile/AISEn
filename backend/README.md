@@ -183,13 +183,15 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `PROGRESS_EVERY` | `250` | Log a harvest progress line every N valid records |
 | `EMBED_CHUNK_SIZE` | `5000` | Encode and log in chunks of N documents |
 | `MIN_DESCRIPTION_CHARS` | `50` | Harvest filter: skip shorter abstracts |
+| `TEMP_DIR` | `data/temp` | Resume state (harvest journal + cursor, index phase + vector cache) and the ingest lock |
 | `WATCH_INTERVAL_SECONDS` | `30` | `watch` service poll interval for `/ready` |
 | `WATCH_TIMEOUT_SECONDS` | `5` | `watch` service request timeout |
 | `ALERT_WEBHOOK_URL` | — | Optional webhook the `watch` service POSTs state changes to |
 
 Ingestion flags (`--target`, `--endpoint`, `--json`, `--db`, `--progress-every`,
-`--embed-chunk-size`) still override the corresponding variables for a single
-run.
+`--embed-chunk-size`, `--fresh`) still override the corresponding variables for a
+single run. `--fresh` is also the only flag without an environment equivalent:
+it exists to discard `TEMP_DIR`, so it is a per-run decision, not configuration.
 
 Invalid combinations stop the process at import time with a message naming the
 offending variable — for example `THRESHOLD_DEFAULT` outside `MIN..MAX`,
@@ -299,12 +301,22 @@ hang:
   libraries log through the same handler; their DEBUG chatter is indented so it
   reads as background. Use `LOG_FORMAT=json` when a collector is reading, not a
   person.
-- **One writer.** `ingestion/ingest.py` takes an `flock` on `data/.ingest.lock`; a second
+- **One writer.** `ingestion/ingest.py` takes an `flock` on `data/temp/.ingest.lock`; a second
   run exits immediately with `another ingest is already running (pid …)`
   instead of interleaving a delete with the other run's inserts.
-- **Persisted outcome.** Every run writes `data/last_ingest.json` (status, stage,
-  timings, counts, error). `/ready` surfaces it, so "did the last ingest work?"
-  does not depend on scrollback from a `--rm` container.
+- **Resumable stages.** Both long stages keep their progress under `data/temp/`
+  and pick it up on the next run: the harvest journals every accepted record and
+  stores its page cursor, the index build caches finished embedding chunks and
+  skips rows already in the collection. `--harvest` therefore tops up to
+  `--target` rather than starting over, and `--fresh` is the only way to discard
+  that state. A resume is refused when the corpus or model changed, since the
+  ids are positional.
+- **Persisted outcome.** Every *successful* run appends one entry to
+  `data/history.json` (append-only JSONL, one line per run) with status, stage,
+  timings, counts, skipped records, and `resume_from`. `/ready` surfaces the last
+  entry, so "did the last ingest work?" does not depend on scrollback from a
+  `--rm` container. A failed run appends nothing and is reported by the final
+  `INGEST FAILED` line.
 - **Request correlation.** Every request gets an `X-Request-ID` (accepted from
   the caller or generated), echoed in the response and in each log line, and
   included in the JSON body of an unexpected `500`.
@@ -469,7 +481,7 @@ docker compose -f docker/docker-compose.yml --env-file .env --profile tools run 
 | `/ready` shows `"documents": 0` | Empty collection | Run `python -m ingestion.ingest --all` |
 | `docker compose -f docker/docker-compose.yml --env-file .env up` logs `the data directory is not writable by this container` | Bind-mounted `./data` owned by a UID other than `APP_UID` (usually root, from Docker creating it) | The container prints the fix. On a fresh clone this should not happen: `data/.gitkeep` keeps the directory in git, owned by you. If it was deleted, `mkdir -p data && sudo chown -R "$(id -u):$(id -g)" data` |
 | `/ready` shows `"metric": null` or something other than `cosine` | Collection built without `hnsw:space=cosine` | Rebuild the collection with `python -m ingestion.ingest --index`; scores are meaningless otherwise |
-| `/ready` lists `last ingest failed: …` | The most recent `ingestion/ingest.py` run aborted | Fix the reported cause, then read `data/last_ingest.json` for counts and timings |
+| An interrupted ingest left a partial corpus | The run was killed mid-stage | Re-run the same command; it resumes. Add `--fresh` to discard the state and start over |
 | `status=list_only`, message "belum dikonfigurasi" | Gemini variables empty — often uvicorn started without `--env-file .env` | Set them, restart with `--env-file .env` |
 | `status=list_only`, message about quota | Gemini 429 / rate limit | Wait, or raise the quota |
 | `status=list_only`, message "Model LLM '...' tidak ditemukan" | Wrong `GEMINI_MODEL` | Use a currently available model name |
@@ -497,8 +509,9 @@ docker compose -f docker/docker-compose.yml --env-file .env --profile tools run 
   [Why the default is 0.60](#why-the-default-is-060).
 - **No authentication or rate limiting.** Anyone who can reach the port can spend
   Gemini quota.
-- **No incremental ingestion.** Re-running `python -m ingestion.ingest --index` deletes and
-  recreates the collection.
+- **No incremental ingestion.** `python -m ingestion.ingest --index` can resume an
+  interrupted build, but a completed build is always replaced wholesale: there is
+  no way to update or delete individual documents.
 - **One process, one worker.** The model is loaded once per process.
 - **No CI, linter, or lockfile.** Dependencies are range-pinned only.
 

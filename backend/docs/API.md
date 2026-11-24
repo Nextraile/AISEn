@@ -357,7 +357,7 @@ the live collection, so this is the endpoint to load before a demo.
 | `version` | string | Application version |
 | `uptime_s` | number \| null | Seconds since startup |
 | `llm_configured` | boolean | Whether both Gemini env vars are set (does **not** validate the key or model name) |
-| `last_ingest` | object \| null | Contents of `data/last_ingest.json`, or `null` if no run is recorded |
+| `last_ingest` | object \| null | The most recent entry of `data/history.json` (append-only JSONL, one line per successful run), or `null` if no run is recorded |
 | `problems` | array | Human-readable reasons the service is not ready; empty when `ok` |
 
 ```json
@@ -369,7 +369,14 @@ the live collection, so this is the endpoint to load before a demo.
   "version": "0.3.0",
   "uptime_s": 142.7,
   "llm_configured": true,
-  "last_ingest": { "status": "ok", "documents_indexed": 47915 },
+  "last_ingest": {
+    "status": "ok",
+    "stage": "harvest",
+    "records_harvested": 47966,
+    "records_skipped": 3,
+    "documents_indexed": null,
+    "resume_from": { "records": 200, "scanned": 3811 }
+  },
   "problems": []
 }
 ```
@@ -380,8 +387,11 @@ The `503` cases, all reported in `problems`:
 - `metric` not `"cosine"` → stored vectors were built with a different distance
   function; `skor` is not a similarity and the 0.1–0.9 threshold is meaningless.
 - collection model differs from `EMBEDDING_MODEL` → re-run `python -m ingestion.ingest --index`.
-- `last_ingest.status == "failed"` → the most recent run aborted; the `error`
-  field says why.
+
+A failed ingest does **not** fail readiness: `data/history.json` only ever gains
+an entry for a successful run (a run that aborted produced no data to point at),
+so `last_ingest` always describes a corpus that exists. Failures are visible in
+the log's final `INGEST FAILED | stage=…, error="…"` line.
 
 `llm_configured: false` does not fail readiness: searches work, summaries never
 appear. Use `/search` to prove the LLM actually responds.
@@ -447,12 +457,13 @@ Useful for frontend clients written against an earlier build.
 | Summary prompt | terse; no length or structure limit | capped at 3 paragraphs / 180 words, forbids invented facts and repeated titles |
 | Citations | `[1, 2, 3]` left as-is | split into `[1] [2] [3]`; invalid numbers removed |
 | `/health` | `{status, documents}` | `{status, version, uptime_s}`; the data facts moved to `/ready` |
-| Readiness | — | `/ready` returns `503` with `problems` when the index is empty, non-cosine, mismatched, or the last ingest failed |
+| Readiness | — | `/ready` returns `503` with `problems` when the index is empty, non-cosine, or built with a mismatched model |
+| Ingestion failures | recorded as a failed last run, which failed readiness | `INGEST FAILED` log line only; `history.json` gains an entry only for successful runs |
 | Metadata handling | direct indexing, `KeyError` possible | missing fields become `""` |
 | LLM timeout | 20 s → 8 s | 15 s (measured: real calls run 1–7 s with a tail past 8 s) |
 | Default threshold | `0.5` (a guess) | `0.53`, then `0.60` once measured on the full 47,913-record corpus (noise ≤ 0.559, relevant phrases ≥ 0.74) |
 | `no_results` guidance | "Kemiripan tertinggi …; turunkan threshold di bawah nilai itu." | reports the threshold and best score, no instruction to lower it — an empty result is valid |
-| Ingestion | notebook run by hand | `python -m ingestion.ingest --all` (same harvest, JSON, and Chroma build) |
+| Ingestion | notebook run by hand | `python -m ingestion.ingest --all` (same harvest, JSON, and Chroma build), resumable per stage |
 
 See [DEMO.md](DEMO.md) for the operational checklist and [DATA.md](DATA.md) for
 how the collection must be built for these scores to mean anything.
