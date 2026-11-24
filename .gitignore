@@ -5,7 +5,7 @@
 # Termasuk: data/api/jobs.json, data/harvest_state.json, data/sets.jsonl,
 # data/timing.json, data/models/**.
 # ---------------------------------------------------------------------------
-/data/
+data/
 
 # ---------------------------------------------------------------------------
 # Secrets — jangan pernah di-commit. Template aman ada di .env.example.
@@ -48,3 +48,6 @@ Thumbs.db
 # CATATAN: lib/libonnxruntime.so (~29 MB) sengaja TETAP di-track karena
 # Dockerfile menyalinnya saat build. Kalau tidak ingin menyimpannya di Git,
 # pindahkan ke Git LFS dan sesuaikan Dockerfile.
+
+**/node_modules/
+**/__pycache__/
