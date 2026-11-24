@@ -83,6 +83,64 @@ def test_harvest_drops_empty_creator_entries(tmp_path):
     assert items[0]["creators"] == ["A"]
 
 
+def test_harvest_skips_a_record_it_cannot_parse(tmp_path, caplog):
+    # One malformed record must not throw away the records around it. The
+    # repository serves a few of these, and the cursor is page-granular, so the
+    # record will not be seen again -- the warning is the only trace.
+    class Exploding(dict):
+        def get(self, key, default=None):
+            if key == "title":
+                raise TypeError("sequence item 1: expected str instance, NoneType found")
+            return super().get(key, default)
+
+    records = [
+        FakeRecord(make_metadata("Baik 1", "a" * 60), identifier="oai:good1"),
+        FakeRecord(Exploding(make_metadata("Rusak", "a" * 60)), identifier="oai:bad"),
+        FakeRecord(make_metadata("Baik 2", "a" * 60), identifier="oai:good2"),
+    ]
+    stats: dict = {}
+
+    with caplog.at_level("WARNING"):
+        items = harvest_into(tmp_path, target=10, records=records, stats=stats)
+
+    assert [item["title"] for item in items] == ["Baik 1", "Baik 2"]
+    assert stats["skipped"] == 1
+
+    skipped = [r for r in caplog.records if r.getMessage() == "harvest skipped record"]
+    assert len(skipped) == 1
+    assert skipped[0].extra_data == {
+        "id": "oai:bad",
+        "reason": "TypeError: sequence item 1: expected str instance, NoneType found",
+    }
+
+
+def test_harvest_skipped_count_reaches_the_run_summary(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS,
+            ingest_json_path=str(data_dir / "d.json"),
+            temp_dir=str(data_dir / "temp"),
+        ),
+    )
+
+    def fake_harvest(**kwargs):
+        kwargs["stats"].update({"scanned": 900, "skipped": 3})
+        return [{"title": "A"}]
+
+    monkeypatch.setattr(ingest, "harvest", fake_harvest)
+
+    assert ingest.main(["--harvest", "--fresh"]) == 0
+
+    entry = json.loads((data_dir / "history.json").read_text(encoding="utf-8"))
+    assert entry["records_skipped"] == 3
+    assert entry["records_harvested"] == 1
+
+
 def test_harvest_journals_records_and_writes_output(tmp_path):
     records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(3)]
 

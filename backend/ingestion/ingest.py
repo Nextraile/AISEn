@@ -138,6 +138,7 @@ def _write_run_summary(
         "finished_at": _utc_now(),
         "duration_s": round(duration_s, 1),
         "records_harvested": counts.get("records"),
+        "records_skipped": counts.get("skipped"),
         "documents_indexed": counts.get("documents"),
         "target": SETTINGS.ingest_target,
         "model": SETTINGS.model_name,
@@ -361,6 +362,7 @@ def harvest(
     progress_every: int | None = None,
     fresh: bool = False,
     temp_dir: str | Path | None = None,
+    stats: dict | None = None,
 ) -> list[dict]:
     """Collect `target` valid records and write them as JSON.
 
@@ -369,6 +371,11 @@ def harvest(
     `data/temp/harvest_state.json`; an interrupted harvest therefore loses at
     most the page in flight and the next run continues from that cursor instead
     of re-fetching the corpus.
+
+    A record that cannot be parsed is skipped and logged, not fatal: one bad
+    record must not throw away a stage that has already read 40,000 good ones.
+    `stats`, when given, is filled with `skipped` and `scanned` so the run
+    summary can report them.
 
     `records` is injectable for tests. An injected iterable has no OAI response
     behind it, so there is no cursor and no page boundary: everything is
@@ -390,6 +397,7 @@ def harvest(
     token = state.get("next_token") or None
     scanned = int(state.get("scanned") or 0)
     resumed_at = len(items)
+    skipped = 0
 
     if resumed_at:
         log.info(
@@ -409,10 +417,13 @@ def harvest(
             extra={"extra_data": {
                 "valid": len(items),
                 "scanned": scanned,
+                "skipped": skipped,
                 "resumed_from": resumed_at,
                 "out": out,
             }},
         )
+        if stats is not None:
+            stats.update({"scanned": scanned, "skipped": skipped})
         return items
 
     journal.parent.mkdir(parents=True, exist_ok=True)
@@ -473,17 +484,38 @@ def harvest(
             try:
                 metadata = record.metadata
             except AttributeError:
-                continue  # deleted/broken record
-            if not is_valid_record(metadata):
-                continue
+                continue  # a deleted record carries no metadata: not an error
 
             identifier = getattr(getattr(record, "header", None), "identifier", "")
+
+            # Both the filter and the mapping read fields that a broken record
+            # can leave malformed (a non-list <dc:creator>, a value that is not
+            # a string), so both are guarded: one bad record must not abort a
+            # 48k-record harvest. Skipping is safe because the cursor is
+            # page-granular, so the record will not be fetched again; the
+            # warning is the only trace, which is why it carries the identifier.
+            try:
+                if not is_valid_record(metadata):
+                    continue
+                item = record_to_item(metadata)
+            except Exception as error:  # noqa: BLE001 - any failure is one bad record
+                skipped += 1
+                log.warning(
+                    "harvest skipped record",
+                    extra={"extra_data": {
+                        "id": identifier or "-",
+                        "reason": "{}: {}".format(type(error).__name__, error),
+                    }},
+                )
+                continue
+
             if identifier and identifier in seen:
                 continue
+
             if identifier:
                 seen.add(identifier)
 
-            items.append(record_to_item(metadata))
+            items.append(item)
             page.append((identifier, items[-1]))
 
             if len(items) % every == 0:
@@ -509,10 +541,13 @@ def harvest(
         extra={"extra_data": {
             "valid": len(items),
             "scanned": scanned,
+            "skipped": skipped,
             "resumed_from": resumed_at,
             "out": out,
         }},
     )
+    if stats is not None:
+        stats.update({"scanned": scanned, "skipped": skipped})
     return items
 
 
@@ -995,6 +1030,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 before = _resume_snapshot()
                 if before:
                     resume_from = before
+                harvest_stats: dict[str, int] = {}
                 counts["records"] = len(
                     harvest(
                         target=args.target,
@@ -1002,13 +1038,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         output=args.json,
                         progress_every=args.progress_every,
                         fresh=args.fresh,
+                        stats=harvest_stats,
                     )
                 )
+                counts["skipped"] = int(harvest_stats.get("skipped") or 0)
                 log.info(
                     "stage complete",
                     extra={"extra_data": {
                         "stage": "harvest",
                         "records": counts["records"],
+                        "skipped": counts["skipped"],
                         "took": _format_duration(elapsed()),
                     }},
                 )
