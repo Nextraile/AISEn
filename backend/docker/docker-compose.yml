@@ -1,7 +1,7 @@
 name: aisen
 
 services:
-  aisen-api:
+  api:
     build:
       context: ..
       dockerfile: docker/Dockerfile
