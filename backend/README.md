@@ -277,12 +277,16 @@ hang:
 - **Log shape.** Terminal lines are a frame, a phrase, then the data:
 
   ```
-  [07:44:54.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
-  [07:44:54.124] [WARNING] [ingest]: collection is empty
-  [07:44:54.125] [CRITICAL] [ingest]: boom
+  [24-11-2026|07:44:54.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
+  [24-11-2026|07:44:54.124] [WARNING] [ingest]: collection is empty
+  [24-11-2026|07:44:54.125] [CRITICAL] [ingest]: boom
   ```
 
-  Three tight cells (`[INFO]`, never `[ INFO ]`), one space between them, `: `
+  The first cell is `DD-MM-YYYY|HH:MM:SS.mmm` in local time, so a log kept from
+  yesterday still says when a line was written. The date and the clock are joined
+  by a bare `|` with no spaces; the data divider is ` | ` with spaces, so the two
+  cannot be confused. Three tight cells (`[INFO]`, never `[ INFO ]`), one space
+  between them, `: `
   before the phrase, ` | ` before the data, `, ` between pairs. Nothing is padded
   to a column: the `:` is the anchor the eye lands on, and the phrase starts a few
   characters later on a `[CRITICAL]` line than on an `[INFO]` one — that is the

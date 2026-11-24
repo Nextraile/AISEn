@@ -11,7 +11,7 @@ consistent and makes the output swappable:
 
 Text output is a tight frame, then a phrase, then the data:
 
-    [15:25:33.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
+    [24-11-2026|15:25:33.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
 
 One space between cells and nothing inside a bracket: `[INFO]`, never
 `[ INFO ]`. There is no column padding, because the `:` after the last bracket is
@@ -53,8 +53,8 @@ DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
 # Every line opens with three framed cells, then `: `, then the phrase:
 #
-#     [15:25:33.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
-#     [15:25:33.123] [CRITICAL] [ingest]: boom
+#     [24-11-2026|15:25:33.123] [INFO] [ingest]: harvest complete | valid=47945, scanned=55575
+#     [24-11-2026|15:25:33.123] [CRITICAL] [ingest]: boom
 #
 # Nothing sits inside a bracket but the value - no inner space at all, so the
 # value touches both `[` and `]`. There is no column padding either: the `:` after
@@ -82,10 +82,10 @@ LOGGER_VALUES = (
 )
 LOGGER_CONTENT_WIDTH = max(len(value) for value in LOGGER_VALUES)
 
-# The stamp is `HH:MM:SS.mmm` - 12 characters. `strftime` has no `%f`, so the
-# milliseconds come from the record; this constant is only the width, used by the
-# tests and by `watch.py`, which builds the frame by hand.
-TIMESTAMP_WIDTH = len("15:25:33.123")
+# The stamp is `DD-MM-YYYY|HH:MM:SS.mmm` - 23 characters. `strftime` has no
+# `%f`, so the milliseconds come from the record; this constant is only the
+# width, used by the tests and by `watch.py`, which builds the frame by hand.
+TIMESTAMP_WIDTH = len("24-11-2026|15:05:58.883")
 
 # Third-party DEBUG lines are background noise during an ingest: 87% of a real
 # run. They are kept - dropping them would hide genuine transport failures - but
@@ -139,7 +139,7 @@ def _is_noise(record: logging.LogRecord) -> bool:
 
 
 class TextFormatter(logging.Formatter):
-    """`[time] [LEVEL] [logger]: phrase | key=value, key=value` for a terminal.
+    """`[DD-MM-YYYY|HH:MM:SS.mmm] [LEVEL] [logger]: phrase | k=v, k=v`.
 
     Nothing is padded inside a bracket and no column is padded either; the `:` is
     the anchor. Data stays `key=value` so it is greppable, and a value is quoted
@@ -148,12 +148,13 @@ class TextFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        # Local time to the millisecond: the date is in the file name and `+0000`
-        # adds nine characters a human never reads. `strftime` has no `%f`, so the
-        # milliseconds are appended from `record.msecs` - which is what makes the
-        # stamp a fixed 12 characters.
+        # Local time, day first: `24-11-2026|15:05:58.883`. `strftime` has no
+        # `%f`, so the milliseconds are appended from `record.msecs`, which is
+        # what keeps the stamp a fixed 23 characters. The `|` lives inside the
+        # cell with no spaces around it, so it cannot be mistaken for the ` | `
+        # that starts the data block.
         stamp = "{}.{:03d}".format(
-            self.formatTime(record, "%H:%M:%S"), int(record.msecs)
+            self.formatTime(record, "%d-%m-%Y|%H:%M:%S"), int(record.msecs)
         )
         service = _service_name(record.name)[:LOGGER_CONTENT_WIDTH]
 

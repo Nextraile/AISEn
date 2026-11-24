@@ -22,7 +22,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 
 WATCH_URL = os.getenv("WATCH_URL", "http://127.0.0.1:8000/ready")
 INTERVAL = float(os.getenv("WATCH_INTERVAL_SECONDS", "30"))
@@ -36,8 +36,14 @@ def _log(message: str) -> None:
     `watch.py` deliberately imports nothing from the package: it is a liveness
     sidecar and must not pull in chromadb or the embedding model to run.
     """
-    now = datetime.now(timezone.utc)
-    stamp = now.strftime("%H:%M:%S") + ".{:03d}".format(now.microsecond // 1000)
+    # Local, not UTC: `TextFormatter` takes its stamp from
+    # `logging.Formatter.formatTime`, which is `time.localtime`. The two frames
+    # only matched before because a container runs on UTC; on a machine with a
+    # real TZ they would have disagreed by hours.
+    now = datetime.now()
+    stamp = now.strftime("%d-%m-%Y|%H:%M:%S") + ".{:03d}".format(
+        now.microsecond // 1000
+    )
     # Same frame as `common.log.TextFormatter`: one space between cells, nothing
     # inside a bracket, `: ` before the message. A literal because this module is
     # stdlib-only by design; keep it in step.

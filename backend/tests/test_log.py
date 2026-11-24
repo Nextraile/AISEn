@@ -52,23 +52,36 @@ def test_no_padding_inside_any_bracket(level):
 
 
 def test_cell_is_the_value_between_tight_brackets():
-    for value in ("15:25:33.123", "INFO", "CRITICAL", "ingest", "httpcore"):
+    for value in ("24-11-2026|15:25:33.123", "INFO", "CRITICAL", "ingest", "httpcore"):
         cell = log._cell(value)
         assert cell == "[{}]".format(value)
         assert len(cell) == len(value) + 2, "just the brackets, no inner space"
 
 
-def test_timestamp_has_milliseconds():
+def test_timestamp_has_date_and_milliseconds():
     line = _render(_record("aisen.ingest", logging.INFO, "BODY"))
     stamp = _bodies(line)[0]
-    assert re.fullmatch(r"\d\d:\d\d:\d\d\.\d{3}", stamp), stamp
-    assert len(stamp) == log.TIMESTAMP_WIDTH
+    assert re.fullmatch(r"\d\d-\d\d-\d{4}\|\d\d:\d\d:\d\d\.\d{3}", stamp), stamp
+    assert len(stamp) == log.TIMESTAMP_WIDTH == 23
+
+
+def test_timestamp_pipe_cannot_be_confused_with_the_data_divider():
+    # The date/time separator is a bare `|`; the data divider is ` | `. Only the
+    # spaced one may exist, or splitting a line on ` | ` would find two.
+    line = _render(
+        _record("aisen.ingest", logging.INFO, "phrase", data={"k": "v"})
+    )
+    assert line.count(" | ") == 1, line
+    phrase, _, data = line.partition("]: ")[2].partition(" | ")
+    assert phrase == "phrase"
+    assert data == "k=v"
 
 
 def test_cells_are_separated_by_exactly_one_space():
     line = _render(_record("aisen.ingest", logging.INFO, "BODY"))
-    head = line.split("]", 1)[0] + "]"
-    assert re.match(r"^\[\d\d:\d\d:\d\d\.\d{3}\] \[INFO\] \[ingest\]: ", line), line
+    assert re.match(
+        r"^\[\d\d-\d\d-\d{4}\|\d\d:\d\d:\d\d\.\d{3}\] \[INFO\] \[ingest\]: ", line
+    ), line
 
 
 def test_every_line_has_exactly_one_divider():
@@ -97,7 +110,9 @@ def test_data_is_pipe_divided_comma_separated_pairs():
 
 def test_no_data_means_no_pipe():
     line = _render(_record("aisen.ingest", logging.CRITICAL, "boom"))
-    assert "|" not in line
+    # The stamp's own `DD-MM-YYYY|HH:MM:SS.mmm` pipe is frame, not data, so the
+    # assertion is on the spaced divider that starts the data block.
+    assert " | " not in line
     assert line.endswith(": boom")
 
 
@@ -121,7 +136,7 @@ def test_pairs_keep_the_order_the_call_site_chose():
 
 def test_empty_extra_data_renders_no_pipe():
     line = _render(_record("aisen.ingest", logging.INFO, "quiet", data={}))
-    assert "|" not in line
+    assert " | " not in line
 
 
 # ---- zones ------------------------------------------------------------------
