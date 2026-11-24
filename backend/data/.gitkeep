@@ -1,3 +1,0 @@
-# Keeps backend/data/ in git so a fresh clone has the directory owned by the
-# cloning user. Docker would otherwise create the missing bind-mount source as
-# root (uid 0), which a container running as APP_UID cannot write.

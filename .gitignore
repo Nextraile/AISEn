@@ -1,16 +1,50 @@
-# OS and editor noise
-.DS_Store
-Thumbs.db
+# ---------------------------------------------------------------------------
+# Data pipeline — SEMUA dihasilkan ulang oleh perintah harvest/clean/normalize/
+# vectorize/index. Ukurannya ~960 MB (raw 157M, clean 178M, normalized 241M,
+# vectors 144M, model ONNX 241M) sehingga tidak boleh masuk Git/GitHub.
+# Termasuk: data/api/jobs.json, data/harvest_state.json, data/sets.jsonl,
+# data/timing.json, data/models/**.
+# ---------------------------------------------------------------------------
+/data/
+
+# ---------------------------------------------------------------------------
+# Secrets — jangan pernah di-commit. Template aman ada di .env.example.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# ---------------------------------------------------------------------------
+# Binary hasil build & artefak test
+# ---------------------------------------------------------------------------
+/undip-harvester
+*.exe
+*.test
+/dist/
+/bin/
+
+# ---------------------------------------------------------------------------
+# IDE & OS
+# ---------------------------------------------------------------------------
 .idea/
 .vscode/
 *.swp
+*~
+.DS_Store
+Thumbs.db
 
-# Python run from the repository root
-__pycache__/
-*.py[cod]
-.pytest_cache/
+# ---------------------------------------------------------------------------
+# Log / file sementara
+# ---------------------------------------------------------------------------
+*.log
+*.tmp
+*.out
 
-# Secret material that must never be committed
-.env
-*.pem
-*.key
+# CATATAN: lib/libonnxruntime.so (~29 MB) sengaja TETAP di-track karena
+# Dockerfile menyalinnya saat build. Kalau tidak ingin menyimpannya di Git,
+# pindahkan ke Git LFS dan sesuaikan Dockerfile.

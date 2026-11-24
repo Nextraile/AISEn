@@ -1,0 +1,22 @@
+# Hasil pipeline — jangan ikut masuk build context (bisa ratusan MB)
+data/
+
+# Binary hasil build lokal
+undip-harvester
+*.exe
+/bin/
+
+# IDE & file lokal
+.idea/
+.git/
+.gitignore
+*.md
+!README.md
+
+# Secrets
+.env
+
+# Container/OS
+Dockerfile
+docker-compose.yml
+.dockerignore

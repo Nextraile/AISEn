@@ -1,0 +1,27 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334" # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  harvester:
+    build:
+      context: .
+      args:
+        VERSION: 0.1.0
+    image: undip-harvester:latest
+    profiles: ["tools"] # tidak ikut `docker compose up`; dipanggil via `run`
+    depends_on:
+      - qdrant
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  qdrant_data:
