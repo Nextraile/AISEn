@@ -16,7 +16,6 @@ services:
         # PowerShell: $env:APP_UID=1000; docker compose -f docker/docker-compose.yml --env-file .env up
 
         APP_UID: ${APP_UID:-10001}
-    container_name: aisen-api
     env_file: ../.env
     ports:
       - "${API_PORT:-8000}:8000"
@@ -96,7 +95,7 @@ services:
     # `python -m service.watch` instead of uvicorn; interval/timeout come from .env
     entrypoint: ["python", "-m", "service.watch"]
     depends_on:
-      - aisen-api
+      - api
     restart: unless-stopped
     logging:
       driver: json-file
