@@ -22,7 +22,7 @@ services:
       - "${API_PORT:-8000}:8000"
     volumes:
       # The whole data directory: ChromaDB needs write access, and `/ready`
-      # reads `last_ingest.json` written next to `documents.json` by the CLI.
+      # reads `history.json` written next to `documents.json` by the CLI.
       # Docker creates this as root if it is missing, which the container (UID
       # APP_UID) then cannot write. `docker-entrypoint.sh` detects that and says
       # so; create the directory as your own user before the first `up`.

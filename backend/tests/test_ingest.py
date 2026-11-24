@@ -519,32 +519,48 @@ def test_ingest_lock_refuses_a_second_writer(tmp_path):
         pass
 
 
-def test_run_summary_records_outcome(tmp_path, monkeypatch):
+def test_run_summary_appends_to_history(tmp_path, monkeypatch):
     import dataclasses
 
+    data_dir = tmp_path / "data"
     monkeypatch.setattr(
         ingest,
         "SETTINGS",
         dataclasses.replace(
-            ingest.SETTINGS, ingest_json_path=str(tmp_path / "d.json")
+            ingest.SETTINGS, ingest_json_path=str(data_dir / "d.json")
         ),
     )
+
     ingest._write_run_summary(
-        status="failed",
-        stage="index",
+        status="ok",
+        stage="harvest",
         started_at="2026-01-01T00:00:00+00:00",
         duration_s=12.5,
         counts={"records": 5, "documents": 3},
-        error="TypeError: boom",
+        resume_from={"records": 200, "scanned": 800},
     )
-    payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["records_harvested"] == 5
-    assert payload["documents_indexed"] == 3
-    assert payload["error"] == "TypeError: boom"
+    ingest._write_run_summary(
+        status="ok",
+        stage="index",
+        started_at="2026-01-02T00:00:00+00:00",
+        duration_s=3.0,
+        counts={"records": 500},
+    )
+
+    # Append-only JSONL, one line per run, and the first entry survives intact.
+    lines = (data_dir / "history.json").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+
+    first, second = (json.loads(line) for line in lines)
+    assert first["records_harvested"] == 5
+    assert first["documents_indexed"] == 3
+    assert first["resume_from"] == {"records": 200, "scanned": 800}
+    # A run that started from scratch says so, rather than omitting the key.
+    assert second["resume_from"] is None
+    assert second["stage"] == "index"
 
 
-def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, caplog):
+def test_failed_run_does_not_touch_history(tmp_path, monkeypatch, caplog):
     # The incident this guards: a traceback scrolls past and a --rm container
     # takes the only copy with it, so nothing says the run failed.
     import dataclasses
@@ -574,10 +590,64 @@ def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, cap
     assert failed[0].extra_data["stage"] == "harvest"
     assert failed[0].extra_data["error"].startswith("TypeError: sequence item 1")
 
-    payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["stage"] == "harvest"
-    assert payload["error"].startswith("TypeError: sequence item 1")
+    # A failure must not be appended: /ready reads the last line as the state of
+    # the data, and a failed run produced none.
+    assert not (tmp_path / "history.json").exists()
+
+
+def test_successful_run_records_what_it_resumed_from(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS,
+            ingest_json_path=str(data_dir / "d.json"),
+            temp_dir=str(data_dir / "temp"),
+        ),
+    )
+    journal = data_dir / "temp" / "harvest.jsonl"
+    journal.parent.mkdir(parents=True)
+    journal.write_text('{"title": "Lama"}\n{"title": "Lama 2"}\n', encoding="utf-8")
+    (data_dir / "temp" / "harvest_state.json").write_text(
+        json.dumps({"next_token": "offset%3D100", "scanned": 812, "valid": 2}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        ingest,
+        "harvest",
+        lambda **kwargs: [{"title": "Lama"}, {"title": "Lama 2"}, {"title": "Baru"}],
+    )
+
+    assert ingest.main(["--harvest"]) == 0
+
+    entry = json.loads((data_dir / "history.json").read_text(encoding="utf-8"))
+    assert entry["records_harvested"] == 3
+    assert entry["resume_from"] == {"records": 2, "scanned": 812}
+
+
+def test_fresh_run_records_no_resume_state(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS,
+            ingest_json_path=str(data_dir / "d.json"),
+            temp_dir=str(data_dir / "temp"),
+        ),
+    )
+    monkeypatch.setattr(ingest, "harvest", lambda **kwargs: [{"title": "A"}])
+
+    assert ingest.main(["--harvest"]) == 0
+
+    entry = json.loads((data_dir / "history.json").read_text(encoding="utf-8"))
+    assert entry["resume_from"] is None
 
 
 # ---------- query demo ----------

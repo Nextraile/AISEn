@@ -53,9 +53,9 @@ def make_client(distances, summarize=None, metadatas=None, raise_server_exceptio
 
 
 @pytest.fixture(autouse=True)
-def _no_last_ingest(monkeypatch, tmp_path):
-    """Keep /ready deterministic: never read a real data/last_ingest.json."""
-    monkeypatch.setattr(app, "LAST_INGEST_PATH", tmp_path / "last_ingest.json")
+def _no_history(monkeypatch, tmp_path):
+    """Keep /ready deterministic: never read a real data/history.json."""
+    monkeypatch.setattr(app, "HISTORY_PATH", tmp_path / "history.json")
 
 
 # ---------- input validation ----------
@@ -507,14 +507,47 @@ def test_ready_rejects_an_empty_or_non_cosine_index():
     assert any("cosine" in problem for problem in body["problems"])
 
 
-def test_ready_reports_a_failed_last_ingest(tmp_path, monkeypatch):
-    summary = tmp_path / "last_ingest.json"
-    summary.write_text(
-        '{"status": "failed", "error": "TypeError: boom"}', encoding="utf-8"
+def test_ready_reports_the_last_successful_ingest(tmp_path, monkeypatch):
+    history = tmp_path / "history.json"
+    history.write_text(
+        "\n".join(
+            [
+                '{"status": "ok", "records_harvested": 200, "resume_from": null}',
+                '{"status": "ok", "records_harvested": 500, "resume_from": {"records": 200}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(app, "LAST_INGEST_PATH", summary)
+    monkeypatch.setattr(app, "HISTORY_PATH", history)
+
     body = make_client([0.1]).get("/ready").json()
-    assert body["problems"] == ["last ingest failed: TypeError: boom"]
+
+    assert body["problems"] == []
+    # The most recent run, not the first one.
+    assert body["last_ingest"]["records_harvested"] == 500
+    assert body["last_ingest"]["resume_from"] == {"records": 200}
+
+
+def test_ready_skips_a_torn_final_line(tmp_path, monkeypatch):
+    # An append interrupted mid-line must not be read as an ingest record.
+    history = tmp_path / "history.json"
+    history.write_text(
+        '{"status": "ok", "records_harvested": 500}\n{"status": "ok", "records_har',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app, "HISTORY_PATH", history)
+
+    body = make_client([0.1]).get("/ready").json()
+
+    assert body["problems"] == []
+    assert body["last_ingest"]["records_harvested"] == 500
+
+
+def test_ready_without_history_has_no_last_ingest(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "HISTORY_PATH", tmp_path / "history.json")
+    body = make_client([0.1]).get("/ready").json()
+    assert body["last_ingest"] is None
 
 
 def test_request_id_is_echoed():

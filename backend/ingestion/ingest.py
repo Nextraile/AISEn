@@ -113,13 +113,23 @@ def _write_run_summary(
     duration_s: float,
     counts: dict[str, int],
     error: str | None = None,
+    resume_from: dict | None = None,
 ) -> None:
     """Record how the last run ended, next to the data it produced.
 
     A removed `--rm` container takes its logs with it; this file is what answers
     "did the last ingest work?" from the host or from `/ready`.
+
+    `data/history.json` is append-only JSONL: one line per *successful* run, so
+    a resumed harvest leaves a record of every run that moved the corpus
+    forward instead of overwriting the previous one. Failures are logged and
+    reported by the CLI but not appended — a failed run produced no data, and
+    a half-written line must never be readable as a successful one.
+
+    `/ready` reads the last line, so nothing else needs to change to keep its
+    contract: same keys, same shape, one entry.
     """
-    path = Path(SETTINGS.ingest_json_path).parent / "last_ingest.json"
+    path = Path(SETTINGS.ingest_json_path).parent / "history.json"
     payload = {
         "status": status,
         "stage": stage,
@@ -132,9 +142,18 @@ def _write_run_summary(
         "model": SETTINGS.model_name,
         "collection": SETTINGS.collection_name,
         "error": error,
+        # None on a run that started from scratch; otherwise what this run
+        # inherited, so a short run in the history is explainable.
+        "resume_from": resume_from,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    # Journal-first, fsync per entry: an interrupted append leaves at worst a
+    # torn final line, and `read_history` drops an unparseable one.
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -207,6 +226,29 @@ def _default_records(endpoint: str, token: str | None = None) -> Iterable:
     # then drops. Switching it changes page contents, so it is never inferred at
     # resume time — a resumed run must see the same stream the first one did.
     return Sickle(endpoint).ListRecords(**params)
+
+
+def _resume_snapshot() -> dict | None:
+    """What a run is about to inherit, or None if it starts from scratch.
+
+    Read before the harvest stage runs, so the history entry says "resumed at
+    200" instead of leaving the reader to infer it from a target of 500. Only
+    the readable numbers are recorded: the cursor itself is an opaque, URL-
+    encoded resume detail and would be noise in a history file.
+    """
+    paths = harvest_paths()
+    try:
+        records = sum(
+            1
+            for line in paths["journal"].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    except OSError:
+        return None
+    if not records:
+        return None
+    state = _load_harvest_state(paths["state"]) or {}
+    return {"records": records, "scanned": state.get("scanned")}
 
 
 # ---- harvest state ---------------------------------------------------------
@@ -689,6 +731,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     started = time.monotonic()
     counts: dict[str, int] = {}
     stage = "harvest" if (args.all or args.harvest) else ("index" if args.index else "query")
+    # What this run inherited, so a history entry for a 500-record run that
+    # started at 200 is explainable instead of looking like a shrunk corpus.
+    resume_from: dict | None = None
 
     def elapsed() -> float:
         return time.monotonic() - started
@@ -701,6 +746,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "ingest start",
                     extra={"extra_data": {"stage": "harvest", "target": args.target, "endpoint": args.endpoint}},
                 )
+                before = _resume_snapshot()
+                if before:
+                    resume_from = before
                 counts["records"] = len(
                     harvest(
                         target=args.target,
@@ -762,14 +810,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             }},
             exc_info=True,
         )
-        _write_run_summary(
-            status="failed",
-            stage=stage,
-            started_at=started_at,
-            duration_s=elapsed(),
-            counts=counts,
-            error=f"{type(error).__name__}: {error}",
-        )
+        # Deliberately no history entry: `data/history.json` records runs that
+        # moved the corpus forward. A failure produced nothing to point at, and
+        # an entry claiming one would let `/ready` report stale success or a
+        # half-finished run as if it were data.
         return 1
 
     _write_run_summary(
@@ -778,6 +822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         started_at=started_at,
         duration_s=elapsed(),
         counts=counts,
+        resume_from=resume_from,
     )
     log.info(
         "ingest complete",
