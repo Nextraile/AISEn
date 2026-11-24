@@ -7,6 +7,8 @@ Run from `backend/` so the relative paths and the package imports resolve:
 
     python -m ingestion.ingest --all
     python -m ingestion.ingest --harvest --target 1000
+    python -m ingestion.ingest --harvest --target 48000   # resumes, tops up
+    python -m ingestion.ingest --harvest --fresh          # discards resume state
     python -m ingestion.ingest --index
     python -m ingestion.ingest --query "analisis kualitas air sungai"
 
@@ -69,7 +71,7 @@ def ingest_lock(path: Path | None = None) -> Iterator[None]:
     running at once interleave a delete with the other's inserts and the winne
     is undefined. That is worth a hard stop, not a warning.
     """
-    lock_path = path or Path(SETTINGS.ingest_json_path).parent / ".ingest.lock"
+    lock_path = path or Path(SETTINGS.temp_dir) / ".ingest.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
 
@@ -193,55 +195,280 @@ def record_to_item(metadata: dict) -> dict:
     }
 
 
-def _default_records(endpoint: str) -> Iterable:
+def _default_records(endpoint: str, token: str | None = None) -> Iterable:
+    """OAI-PMH record stream, optionally resumed from a `resumptionToken`."""
     from sickle import Sickle  # lazy: only harvesting needs this dependency
 
-    return Sickle(endpoint).ListRecords(metadataPrefix="oai_dc")
+    params = {"metadataPrefix": "oai_dc"}
+    if token:
+        params["resumptionToken"] = token
+    # `ignore_deleted=False` (sickle's default) is what the first full harvest
+    # used: one page carries 39 headers flagged deleted that `is_valid_record`
+    # then drops. Switching it changes page contents, so it is never inferred at
+    # resume time — a resumed run must see the same stream the first one did.
+    return Sickle(endpoint).ListRecords(**params)
 
 
-# ---- harvest ---------------------------------------------------------------
+# ---- harvest state ---------------------------------------------------------
+# Everything a resumed harvest needs lives in data/temp/. The final output stays
+# data/documents.json so the index build and the docs keep pointing at one file.
+def harvest_paths(temp_dir: str | Path | None = None) -> dict[str, Path]:
+    """Locations of the harvest journal, its cursor, and the final output."""
+    base = Path(temp_dir or SETTINGS.temp_dir)
+    return {
+        "journal": base / "harvest.jsonl",
+        "state": base / "harvest_state.json",
+        "output": Path(SETTINGS.ingest_json_path),
+    }
+
+
+_OAI_NS = "{http://www.openarchives.org/OAI/2.0/}"
+
+
+def _page_cursor(stream) -> str | None:
+    """The resumption token that names the page currently being consumed.
+
+    `stream.resumption_token` is NOT this value. sickle stores the token of the
+    *next* response before it yields the first record of the current one, so
+    committing it skips a page on resume. Measured against the live endpoint:
+    it read `offset=215` while records 108..214 of the `offset=108` page were
+    still being handed out, and a resumed run then lost 12 records.
+
+    The response's own `<request resumptionToken="...">` element names the page
+    being read, which is exactly what a resume must send back. The first page is
+    requested without a token, so the attribute is absent and the cursor is
+    None: a crash there restarts from the top, which is correct and cheap.
+    """
+    xml = getattr(getattr(stream, "oai_response", None), "xml", None)
+    if xml is None:
+        return None
+    request = xml.find(f"{_OAI_NS}request")
+    if request is None:
+        return None
+    return request.attrib.get("resumptionToken") or None
+
+
+def _page_record_count(stream) -> int | None:
+    """How many records the response currently being consumed contains.
+
+    `None` for an injected iterable, which has no OAI response behind it. That
+    is what tells `harvest()` whether a page boundary can be trusted at all.
+    """
+    xml = getattr(getattr(stream, "oai_response", None), "xml", None)
+    if xml is None:
+        return None
+    return len(xml.findall(f".//{_OAI_NS}record"))
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace `path` in one step, so a crash never leaves it half-written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def _load_harvest_state(path: Path) -> dict | None:
+    """Read the cursor written by the previous page, or None on a fresh start."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _read_journal(path: Path) -> tuple[list[dict], set[str]]:
+    """Rebuild the record list from the journal, dropping duplicated identifiers.
+
+    A page is appended before the cursor advances, so an interrupted run can
+    leave a page that the cursor will fetch again. Dedup by the OAI identifier
+    makes replay harmless and keeps the document order identical.
+    """
+    items: list[dict] = []
+    seen: set[str] = set()
+    try:
+        handle = path.open("r", encoding="utf-8")
+    except OSError:
+        return items, seen
+    with handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                # A torn final line from a hard kill: the cursor is authoritative.
+                continue
+            identifier = entry.pop("_identifier", "")
+            if identifier and identifier in seen:
+                continue
+            seen.add(identifier)
+            items.append(entry)
+    return items, seen
+
+
 def harvest(
     target: int = SETTINGS.ingest_target,
     endpoint: str = SETTINGS.oai_endpoint,
     output: str | Path = SETTINGS.ingest_json_path,
     records: Iterable | None = None,
     progress_every: int | None = None,
+    fresh: bool = False,
+    temp_dir: str | Path | None = None,
 ) -> list[dict]:
     """Collect `target` valid records and write them as JSON.
 
-    `records` is injectable for tests; by default it comes from OAI-PMH.
+    The run is resumable. Every page is appended to `data/temp/harvest.jsonl`
+    and fsynced, then the cursor of the page just read is stored in
+    `data/temp/harvest_state.json`; an interrupted harvest therefore loses at
+    most the page in flight and the next run continues from that cursor instead
+    of re-fetching the corpus.
+
+    `records` is injectable for tests. An injected iterable has no OAI response
+    behind it, so there is no cursor and no page boundary: everything is
+    flushed once at the end.
     """
     if target < 1:
         raise ValueError(f"--target must be >= 1 (got {target})")
 
     every = progress_every or SETTINGS.progress_every
-    items: list[dict] = []
-    scanned = 0
-    stream = records if records is not None else _default_records(endpoint)
+    paths = harvest_paths(temp_dir)
+    journal, state_path, out = paths["journal"], paths["state"], Path(output)
 
-    for record in stream:
-        scanned += 1
-        try:
-            metadata = record.metadata
-        except AttributeError:
-            continue  # deleted/broken record
-        if not is_valid_record(metadata):
-            continue
+    if fresh:
+        for path in (journal, state_path):
+            path.unlink(missing_ok=True)
 
-        items.append(record_to_item(metadata))
-        if len(items) % every == 0:
-            log.info("harvesting", extra={"extra_data": {"valid": len(items), "scanned": scanned}})
-        if len(items) >= target:
-            break
+    items, seen = _read_journal(journal)
+    state = _load_harvest_state(state_path) or {}
+    token = state.get("next_token") or None
+    scanned = int(state.get("scanned") or 0)
+    resumed_at = len(items)
 
-    path = Path(output)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(items, handle, ensure_ascii=False, indent=2)
+    if resumed_at:
+        log.info(
+            "harvest resume",
+            extra={"extra_data": {
+                "valid": resumed_at,
+                "target": target,
+                "token": token or "-",
+            }},
+        )
+
+    if len(items) >= target:
+        # Already at the target: rewriting the output would be the only work,
+        # and appending one more record would break the "stop at target" rule.
+        log.info(
+            "harvest complete",
+            extra={"extra_data": {
+                "valid": len(items),
+                "scanned": scanned,
+                "resumed_from": resumed_at,
+                "out": out,
+            }},
+        )
+        return items
+
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    stream = records if records is not None else _default_records(endpoint, token)
+
+    from sickle.oaiexceptions import NoRecordsMatch
+
+    # The harvester walks one page at a time so a page can be committed before
+    # the next request. With an injected iterable there is no page boundary to
+    # commit at, which is why `records` is only used by tests.
+    page: list[tuple[str, dict]] = []
+
+    def commit_page(scanned_so_far: int) -> None:
+        """Append the buffered page, fsync it, then move the cursor."""
+        if not page:
+            return
+        # Journal first: if the process dies between the two writes the next run
+        # refetches this page and dedups it, which is recoverable. The opposite
+        # order would skip records permanently.
+        with journal.open("a", encoding="utf-8") as handle:
+            for identifier, item in page:
+                payload = dict(item)
+                payload["_identifier"] = identifier
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        page.clear()
+        _atomic_write(out, json.dumps(items, ensure_ascii=False, indent=2))
+        _atomic_write(
+            state_path,
+            json.dumps(
+                {
+                    "next_token": _page_cursor(stream),
+                    "valid": len(items),
+                    "scanned": scanned_so_far,
+                    "target": target,
+                    "endpoint": endpoint,
+                    "updated_at": _utc_now(),
+                },
+                indent=2,
+            )
+            + "\n",
+        )
+
+    try:
+        iterator = iter(stream)
+        while True:
+            try:
+                record = next(iterator)
+            except StopIteration:
+                break
+            except NoRecordsMatch:
+                # The repository answers an exhausted offset with an <error>.
+                log.info("harvest reached the end of the list")
+                break
+
+            scanned += 1
+            try:
+                metadata = record.metadata
+            except AttributeError:
+                continue  # deleted/broken record
+            if not is_valid_record(metadata):
+                continue
+
+            identifier = getattr(getattr(record, "header", None), "identifier", "")
+            if identifier and identifier in seen:
+                continue
+            if identifier:
+                seen.add(identifier)
+
+            items.append(record_to_item(metadata))
+            page.append((identifier, items[-1]))
+
+            if len(items) % every == 0:
+                log.info(
+                    "harvesting",
+                    extra={"extra_data": {"valid": len(items), "scanned": scanned}},
+                )
+            if len(items) >= target:
+                break
+            # Commit when the response that produced the buffered records has
+            # been fully consumed. `_page_cursor` is None for an injected
+            # iterable, so tests fall through to the single flush in `finally`.
+            records_in_page = _page_record_count(stream)
+            if records_in_page is not None and len(page) >= records_in_page:
+                commit_page(scanned)
+    finally:
+        commit_page(scanned)
+
+    _atomic_write(out, json.dumps(items, ensure_ascii=False, indent=2))
 
     log.info(
         "harvest complete",
-        extra={"extra_data": {"valid": len(items), "scanned": scanned, "out": path}},
+        extra={"extra_data": {
+            "valid": len(items),
+            "scanned": scanned,
+            "resumed_from": resumed_at,
+            "out": out,
+        }},
     )
     return items
 
@@ -439,6 +666,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=SETTINGS.threshold_default,
         help="minimum similarity for --query",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "throw away the resume state in TEMP_DIR and start over "
+            "(without it, --harvest resumes and tops up to --target)"
+        ),
+    )
     return parser
 
 
@@ -472,6 +707,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         endpoint=args.endpoint,
                         output=args.json,
                         progress_every=args.progress_every,
+                        fresh=args.fresh,
                     )
                 )
                 log.info(

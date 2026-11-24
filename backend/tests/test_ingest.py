@@ -6,8 +6,10 @@ from ingestion import ingest
 
 
 class FakeRecord:
-    def __init__(self, metadata):
+    def __init__(self, metadata, identifier=None):
         self.metadata = metadata
+        if identifier is not None:
+            self.header = type("Header", (), {"identifier": identifier})()
 
 
 def make_metadata(title, description, url="http://x/1.pdf", creators=None, date=None):
@@ -23,6 +25,17 @@ def make_metadata(title, description, url="http://x/1.pdf", creators=None, date=
 
 
 # ---------- harvest ----------
+def harvest_into(tmp_path, **kwargs):
+    """Harvest with its resume state confined to `tmp_path`, as production does.
+
+    Without this the journal lands in the real `data/temp/` and one test would
+    resume from another test's pages.
+    """
+    kwargs.setdefault("output", tmp_path / "clean.json")
+    kwargs["temp_dir"] = tmp_path / "temp"
+    return ingest.harvest(**kwargs)
+
+
 def test_harvest_skips_admin_short_and_broken_records(tmp_path):
     records = [
         object(),  # record without `.metadata` (deleted/broken)
@@ -32,7 +45,7 @@ def test_harvest_skips_admin_short_and_broken_records(tmp_path):
     ]
 
     output = tmp_path / "clean.json"
-    items = ingest.harvest(target=10, output=output, records=records)
+    items = harvest_into(tmp_path, target=10, records=records)
 
     assert len(items) == 1
     assert items[0]["title"] == "Layak"
@@ -42,10 +55,8 @@ def test_harvest_skips_admin_short_and_broken_records(tmp_path):
 
 
 def test_harvest_fills_default_date(tmp_path):
-    items = ingest.harvest(
-        target=10,
-        output=tmp_path / "clean.json",
-        records=[FakeRecord(make_metadata("Judul", "a" * 60))],
+    items = harvest_into(
+        tmp_path, target=10, records=[FakeRecord(make_metadata("Judul", "a" * 60))]
     )
     # Stored as data (it is displayed to users), so it stays Indonesian.
     assert items[0]["date"] == "Tanggal tidak diketahui"
@@ -53,24 +64,297 @@ def test_harvest_fills_default_date(tmp_path):
 
 def test_harvest_stops_at_target(tmp_path):
     records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(10)]
-    items = ingest.harvest(target=3, output=tmp_path / "clean.json", records=records)
-    assert len(items) == 3
+    assert len(harvest_into(tmp_path, target=3, records=records)) == 3
 
 
 def test_harvest_rejects_bad_target(tmp_path):
     with pytest.raises(ValueError, match="--target"):
-        ingest.harvest(target=0, output=tmp_path / "clean.json", records=[])
+        harvest_into(tmp_path, target=0, records=[])
 
 
 def test_harvest_drops_empty_creator_entries(tmp_path):
     # An empty <dc:creator/> reaches us as None inside the list. The full-corpus
     # harvest contains such records, and joining them used to abort the index.
-    items = ingest.harvest(
+    items = harvest_into(
+        tmp_path,
         target=10,
-        output=tmp_path / "clean.json",
         records=[FakeRecord(make_metadata("Judul", "a" * 60, creators=[None, "A"]))],
     )
     assert items[0]["creators"] == ["A"]
+
+
+def test_harvest_journals_records_and_writes_output(tmp_path):
+    records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(3)]
+
+    harvest_into(tmp_path, target=10, records=records)
+
+    journal = tmp_path / "temp" / "harvest.jsonl"
+    lines = [json.loads(l) for l in journal.read_text(encoding="utf-8").splitlines()]
+    assert [entry["title"] for entry in lines] == ["J0", "J1", "J2"]
+    # The identifier rides along so a replayed page can be deduplicated...
+    assert all("_identifier" in entry for entry in lines)
+    # ...but it must not leak into the document the index build consumes.
+    output = json.loads((tmp_path / "clean.json").read_text(encoding="utf-8"))
+    assert all("_identifier" not in item for item in output)
+
+
+def test_harvest_resumes_from_the_journal_without_refetching(tmp_path):
+    first = [
+        FakeRecord(make_metadata(f"A{i}", "a" * 60), identifier=f"oai:{i}")
+        for i in range(2)
+    ]
+    harvest_into(tmp_path, target=2, records=first)
+
+    # Second run: the endpoint offers the same records again from the top.
+    second = [
+        FakeRecord(make_metadata("A0", "a" * 60), identifier="oai:0"),
+        FakeRecord(make_metadata("A1", "a" * 60), identifier="oai:1"),
+        FakeRecord(make_metadata("B0", "a" * 60), identifier="oai:2"),
+    ]
+    items = harvest_into(tmp_path, target=3, records=second)
+
+    assert [item["title"] for item in items] == ["A0", "A1", "B0"]
+
+
+def test_harvest_at_target_does_not_append_one_more(tmp_path):
+    # Resuming with the target already met must be a no-op: a top-up request for
+    # the same number used to fetch one extra record.
+    records = [
+        FakeRecord(make_metadata(f"A{i}", "a" * 60), identifier=f"oai:{i}")
+        for i in range(2)
+    ]
+    harvest_into(tmp_path, target=2, records=records)
+
+    again = harvest_into(
+        tmp_path,
+        target=2,
+        records=[FakeRecord(make_metadata("X", "a" * 60), identifier="oai:x")],
+    )
+
+    assert [item["title"] for item in again] == ["A0", "A1"]
+
+
+def test_harvest_records_without_an_identifier_are_still_kept(tmp_path):
+    # Dedup depends on the header identifier; a stream without one must still
+    # yield documents rather than silently dropping them.
+    items = harvest_into(
+        tmp_path, target=10, records=[FakeRecord(make_metadata("Tanpa ID", "a" * 60))]
+    )
+    assert [item["title"] for item in items] == ["Tanpa ID"]
+
+
+def test_harvest_fresh_flag_discards_the_journal(tmp_path):
+    harvest_into(
+        tmp_path, target=1, records=[FakeRecord(make_metadata("Lama", "a" * 60))]
+    )
+
+    items = harvest_into(
+        tmp_path,
+        target=10,
+        records=[FakeRecord(make_metadata("Baru", "a" * 60))],
+        fresh=True,
+    )
+
+    assert [item["title"] for item in items] == ["Baru"]
+    output = json.loads((tmp_path / "clean.json").read_text(encoding="utf-8"))
+    assert [item["title"] for item in output] == ["Baru"]
+
+
+def test_harvest_survives_a_torn_journal_line(tmp_path):
+    journal = tmp_path / "temp" / "harvest.jsonl"
+    journal.parent.mkdir(parents=True)
+    good = {
+        "title": "Utuh",
+        "creators": [],
+        "description": "a" * 60,
+        "url": "u",
+        "date": "2024",
+        "_identifier": "x1",
+    }
+    journal.write_text(
+        json.dumps(good) + '\n{"title": "terpo', encoding="utf-8"
+    )
+
+    items = harvest_into(
+        tmp_path, target=10, records=[FakeRecord(make_metadata("Baru", "a" * 60))]
+    )
+
+    assert [item["title"] for item in items] == ["Utuh", "Baru"]
+
+
+# ---------- harvest: OAI page boundaries ----------
+class FakeRequest:
+    def __init__(self, token):
+        self.attrib = {"resumptionToken": token} if token else {}
+
+
+class FakePageXML:
+    """The parts of an OAI-PMH response the harvester reads."""
+
+    def __init__(self, request_token, record_count):
+        self._request_token = request_token
+        self._record_count = record_count
+
+    def find(self, tag):
+        return FakeRequest(self._request_token) if tag.endswith("request") else None
+
+    def findall(self, tag):
+        return [object()] * self._record_count
+
+
+class FakeOaiResponse:
+    def __init__(self, xml):
+        self.xml = xml
+
+
+class FakeToken:
+    def __init__(self, token):
+        self.token = token
+
+
+class FakePagedStream:
+    """Mimics the two sickle behaviours the resume design depends on.
+
+    Both were measured against the live endpoint:
+
+    * the parsed response carries its own `<request resumptionToken="...">`
+      naming the page being read -- this is the cursor a resume must send back;
+    * `resumption_token` already names the NEXT page before the current page's
+      first record is yielded, so storing it skips a page on resume.
+    """
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.oai_response = None
+        self.resumption_token = None
+        self._records = self._iterate()
+
+    def _set_page(self, number):
+        page = self.pages[number]
+        request_token = None if number == 0 else f"offset={number * 100}"
+        self.oai_response = FakeOaiResponse(FakePageXML(request_token, len(page)))
+        self.resumption_token = FakeToken(f"offset={(number + 1) * 100}")
+
+    def _iterate(self):
+        for number, page in enumerate(self.pages):
+            self._set_page(number)
+            for record in page:
+                yield record
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._records)
+
+
+def paged(title_prefix, count):
+    return [
+        FakeRecord(
+            make_metadata(f"{title_prefix}{i}", "a" * 60),
+            identifier=f"oai:{title_prefix}{i}",
+        )
+        for i in range(count)
+    ]
+
+
+def test_harvest_commits_the_cursor_at_each_page_boundary(tmp_path):
+    # The cursor advances per page, not only at the end: that is what makes an
+    # interrupted run resume instead of re-fetching the whole corpus.
+    stream = FakePagedStream([paged("A", 2), paged("B", 2), paged("C", 2)])
+
+    seen = []
+    original = ingest._atomic_write
+
+    def spy(path, text):
+        if path.name == "harvest_state.json":
+            seen.append(json.loads(text))
+        original(path, text)
+
+    ingest._atomic_write = spy
+    try:
+        harvest_into(tmp_path, target=100, records=stream)
+    finally:
+        ingest._atomic_write = original
+
+    # Page 0 was requested without a token, so there is nothing to resume from
+    # until page 1 has been read; after that the cursor names that page. The
+    # final page leaves an empty buffer, so no fourth write happens.
+    assert [entry["next_token"] for entry in seen] == [
+        None,
+        "offset=100",
+        "offset=200",
+    ]
+    assert [entry["valid"] for entry in seen] == [2, 4, 6]
+
+
+def test_harvest_cursor_names_the_page_read_not_the_next_one(tmp_path):
+    # The regression this design exists for: sickle's own token is one page
+    # ahead, and storing it lost 12 records on a live resume.
+    pages = [paged("A", 2), paged("B", 2)]
+    harvest_into(tmp_path, target=3, records=FakePagedStream(pages))
+
+    state = json.loads(
+        (tmp_path / "temp" / "harvest_state.json").read_text(encoding="utf-8")
+    )
+    # Stopped mid-page-2 (2 from A + 1 from B), so the page being read is still
+    # page 2 -- and sickle's own token says offset=200, i.e. page 3.
+    assert state["next_token"] == "offset=100"
+    assert state["valid"] == 3
+
+
+def test_harvest_resume_sends_the_saved_cursor(tmp_path, monkeypatch):
+    pages = [paged("A", 2), paged("B", 2)]
+    harvest_into(tmp_path, target=3, records=FakePagedStream(pages))
+
+    asked = {}
+
+    class FakeSickle:
+        def __init__(self, endpoint):
+            pass
+
+        def ListRecords(self, **params):
+            asked.update(params)
+            return iter([FakeRecord(make_metadata("Z", "a" * 60), identifier="oai:z")])
+
+    import sickle
+
+    monkeypatch.setattr(sickle, "Sickle", FakeSickle)
+    items = harvest_into(tmp_path, target=5, records=None)
+
+    assert asked["resumptionToken"] == "offset=100"
+    assert asked["metadataPrefix"] == "oai_dc"
+    # The resume continues from page 2; the fake endpoint stands in for it and
+    # yields Z. Records of page 1 are not refetched.
+    assert [item["title"] for item in items] == ["A0", "A1", "B0", "Z"]
+
+
+def test_harvest_first_page_has_no_cursor_to_resume_from(tmp_path, monkeypatch):
+    # A crash during the first page restarts from the top: the request carried
+    # no token, so nothing else is possible.
+    harvest_into(tmp_path, target=10, records=FakePagedStream([paged("A", 2)]))
+
+    state = json.loads(
+        (tmp_path / "temp" / "harvest_state.json").read_text(encoding="utf-8")
+    )
+    assert state["next_token"] is None
+
+    asked = {}
+
+    class FakeSickle:
+        def __init__(self, endpoint):
+            pass
+
+        def ListRecords(self, **params):
+            asked.update(params)
+            return iter([FakeRecord(make_metadata("Z", "a" * 60), identifier="oai:z")])
+
+    import sickle
+
+    monkeypatch.setattr(sickle, "Sickle", FakeSickle)
+    harvest_into(tmp_path, target=3, records=None)
+
+    assert "resumptionToken" not in asked
 
 
 # ---------- index ----------
@@ -212,9 +496,9 @@ def test_encode_in_chunks_makes_one_call_per_chunk(tmp_path):
 
 def test_harvest_accepts_a_custom_progress_every(tmp_path):
     records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(5)]
-    items = ingest.harvest(
+    items = harvest_into(
+        tmp_path,
         target=10,
-        output=tmp_path / "clean.json",
         records=records,
         progress_every=2,
     )
