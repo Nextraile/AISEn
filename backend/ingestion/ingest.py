@@ -21,6 +21,7 @@ the CLI flags below still win over them.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -389,8 +390,14 @@ def harvest(
     journal, state_path, out = paths["journal"], paths["state"], Path(output)
 
     if fresh:
+        discarded, _ = _read_journal(journal) if journal.exists() else ([], set())
         for path in (journal, state_path):
             path.unlink(missing_ok=True)
+        if discarded:
+            log.info(
+                "harvest journal discarded",
+                extra={"extra_data": {"records": len(discarded)}},
+            )
 
     items, seen = _read_journal(journal)
     state = _load_harvest_state(state_path) or {}
@@ -557,16 +564,26 @@ def index_state_path(temp_dir: str | Path | None = None) -> Path:
     return Path(temp_dir or SETTINGS.temp_dir) / "index_state.json"
 
 
-def _corpus_fingerprint(json_path: Path, n_documents: int) -> str:
-    """Identify the exact corpus a build was started from.
+def _corpus_fingerprint(documents: Sequence[str]) -> str:
+    """Identify the corpus a build was started from by the text it embeds.
 
     A resumed build must not mix vectors from two different harvests: the ids
     are positional (`doc_<index>`), so re-harvesting can rename what `doc_7`
-    means. Size + mtime of the JSON is enough to notice a rewrite, and it costs
-    one `stat` instead of hashing a 100 MB file.
+    means. Only the embedded text goes in, in corpus order, so a change to
+    `creators`, `date` or `url` alone does not invalidate the index while any
+    change to what a vector was computed from does.
+
+    The text is hashed with NUL separators (`\\x00` cannot occur inside a
+    title or abstract), so the hash covers both the strings and their order and
+    one string cannot shift into the next. An identical re-harvest therefore
+    compares equal on purpose: the bytes of `data/documents.json` may differ
+    (mtime always does), but what the index would contain does not.
     """
-    stat = json_path.stat()
-    return f"{n_documents}:{stat.st_size}:{stat.st_mtime_ns}"
+    digest = hashlib.sha256()
+    for text in documents:
+        digest.update(text.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
 
 
 def _load_index_state(path: Path) -> dict | None:
@@ -620,7 +637,11 @@ def _resumable_stored_ids(
 
     collection = client.get_or_create_collection(
         name=SETTINGS.collection_name,
-        metadata={"hnsw:space": "cosine", "embedding_model": SETTINGS.model_name},
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_model": SETTINGS.model_name,
+            "corpus_hash": fingerprint,
+        },
     )
     stored = set(collection.get(include=[])["ids"])
     log.info(
@@ -631,6 +652,19 @@ def _resumable_stored_ids(
         }},
     )
     return stored
+
+
+def _existing_collection(client):
+    """The collection if it is already there, else `None`.
+
+    Reading it back is not the same as `get_or_create_collection`: asking for
+    the metadata must not create an empty collection as a side effect, or a
+    first build would look like it had something to resume from.
+    """
+    try:
+        return client.get_collection(name=SETTINGS.collection_name)
+    except chromadb.errors.NotFoundError:
+        return None
 
 
 def _encode_in_chunks(
@@ -746,11 +780,17 @@ def build_index(
       without re-embedding anything.
 
     A resume is only allowed when the state names the same corpus (hash of the
-    JSON's size, mtime and record count) and the same model. Anything else --
+    embedded titles and abstracts) and the same model. Anything else --
     including `--fresh`, which is the only way to force a rebuild -- deletes the
     collection and starts over: `doc_<index>` ids are positional, so mixing
     vectors from two harvests would silently attach the wrong abstract to a
     vector.
+
+    A completed build leaves no resume state behind, so the collection's own
+    `corpus_hash` metadata answers "which corpus is in here". When it matches
+    and the row count is the whole corpus, the build returns without loading
+    the model at all: re-harvesting unchanged data no longer re-embeds 48k
+    abstracts.
 
     `model` and `client` are injectable for tests.
     """
@@ -760,7 +800,6 @@ def build_index(
         raise ValueError(f"{json_path} is empty: run --harvest first")
 
     model_name = SETTINGS.model_name
-    fingerprint = _corpus_fingerprint(source, len(data))
     state_path = index_state_path(temp_dir)
     cache_path = state_path.parent / "index_vectors.npy"
 
@@ -778,6 +817,10 @@ def build_index(
         )
         ids.append(f"doc_{idx}")
 
+    # Built once, then both hashed and embedded: `documents` is exactly what the
+    # vectors are computed from, and the fingerprint only needs that.
+    fingerprint = _corpus_fingerprint(documents)
+
     previous = None if fresh else _load_index_state(state_path)
     if fresh:
         _clear_vectors(cache_path)
@@ -789,6 +832,33 @@ def build_index(
     # `building`-phase resume the rows already in the collection never need a
     # vector again, and encoding them would waste the longest stage.
     client = client or chromadb.PersistentClient(path=db_path)
+
+    # A finished build leaves no resume state, only the collection, so the
+    # durable record of "which corpus is in here" is the collection's own
+    # metadata. Same corpus and the same row count means there is nothing to do
+    # at all: the expensive stage is skipped without loading the model.
+    collection = _existing_collection(client)
+    # Chroma returns `None` metadata for a collection created without any.
+    metadata = (collection.metadata if collection is not None else None) or {}
+    if (
+        collection is not None
+        and not fresh
+        and metadata.get("hnsw:space") == "cosine"
+        and metadata.get("embedding_model") == model_name
+        and metadata.get("corpus_hash") == fingerprint
+        and collection.count() == document_count
+    ):
+        log.info(
+            "index up to date",
+            extra={"extra_data": {"documents": document_count}},
+        )
+        # A crashed build can leave resume state behind while the collection
+        # already matches; drop it so a later run cannot resume against a
+        # build that is in fact complete.
+        _clear_vectors(cache_path)
+        state_path.unlink(missing_ok=True)
+        return document_count
+
     stored = _resumable_stored_ids(
         client,
         fingerprint=fingerprint,
@@ -869,7 +939,11 @@ def build_index(
     # rather than as a build whose rows are claimed to exist.
     collection = client.get_or_create_collection(
         name=SETTINGS.collection_name,
-        metadata={"hnsw:space": "cosine", "embedding_model": model_name},
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_model": model_name,
+            "corpus_hash": fingerprint,
+        },
     )
     _write_index_state(
         state_path,
