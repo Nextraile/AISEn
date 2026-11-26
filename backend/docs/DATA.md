@@ -18,7 +18,7 @@ Everything here happens in `ingestion/ingest.py` — there is no other ingestion
 OAI-PMH (eprints2.undip.ac.id/cgi/oai2)
         │  harvest + filter
         ▼
-data/documents.json          (~1,000 records)
+data/documents.json          (47,993 records in the shipped build)
         │  embed "{title}. {description}"
         ▼
 data/vector_db/                 ChromaDB, collection "undip_research_search"
@@ -31,8 +31,8 @@ data/vector_db/                 ChromaDB, collection "undip_research_search"
 | Endpoint | `https://eprints2.undip.ac.id/cgi/oai2` |
 | Metadata format | `oai_dc` |
 | Client | `sickle` |
-| Target | 1,000 valid records |
-| Observed | 1,000 kept out of 5,035 scanned |
+| Target | 1,000 valid records (default; the shipped build used the full feed) |
+| Observed | 47,993 kept out of ~55,649 scanned |
 
 A record is kept when **all** of these hold:
 
@@ -53,8 +53,10 @@ Extraction rules:
 
 Result is written to `data/documents.json`.
 
-Because harvesting stops at 1,000, the indexed corpus is an **early-page sample**
-of the OAI feed, not a random or complete sample of Undip's repository.
+Because harvesting stops at `INGEST_TARGET`, a default run indexes an
+**early-page sample** of the OAI feed, not a random or complete sample of
+Undip's repository. The shipped build raised the target to the whole feed and
+kept 47,993 records.
 
 ## Stage 2 — Embed and index
 

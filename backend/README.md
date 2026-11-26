@@ -1,10 +1,11 @@
 # Undip Research Semantic Search API
 
-A small FastAPI service that answers free-text questions over ~1,000 harvested
-Universitas Diponegoro eprints. It embeds the query, searches a local ChromaDB
-collection by cosine similarity, returns the matching papers, and — when a
-Gemini key is configured — adds an AI summary whose claims are cited against the
-papers that were actually retrieved.
+A small FastAPI service that answers free-text questions over a harvested
+corpus of Universitas Diponegoro eprints (47,993 records in the shipped build;
+`INGEST_TARGET` still defaults to a 1,000-record sample). It embeds the query,
+searches a local ChromaDB collection by cosine similarity, returns the matching
+papers, and — when a Gemini key is configured — adds an AI summary whose claims
+are cited against the papers that were actually retrieved.
 
 > **Status: prototype.** Built for a project demo, not a production deployment.
 > See [Known limitations](#known-limitations) before relying on it.
@@ -225,12 +226,12 @@ It is a relevance gate, not a knob for "make sure something comes back". An
 empty result is a valid answer.
 
 The default (`0.60`, `THRESHOLD_DEFAULT` in `common/config.py`) was measured on the
-**full 47,913-record collection**, not guessed and not inherited from the old
+**full 47,993-record collection**, not guessed and not inherited from the old
 1,000-record sample. The method: score phrasal queries that should match and
 off-topic queries that should not, then place the threshold in the gap **only if
 the two bands separate**.
 
-Measured on all 47,913 records with the real model:
+Measured on all 47,993 records with the real model:
 
 | Query | Best score | 100th score |
 |---|---|---|
@@ -273,8 +274,8 @@ hang:
 
 - **Ingestion** logs a harvest line every `PROGRESS_EVERY` records and an encode
   line per `EMBED_CHUNK_SIZE` documents, including rate and ETA
-  (`embedding | done=25000/47915, pct=52%, rate=19.3/s, eta=19m`). Each stage is
-  timed, and the run ends with `ingest complete | took=41m12s, records=47915` or
+  (`embedding | done=25000/47993, pct=52%, rate=19.3/s, eta=19m`). Each stage is
+  timed, and the run ends with `ingest complete | took=41m12s, records=47993` or
   `INGEST FAILED | stage=index, after=2m03s, error="TypeError: …"`.
 - **Log shape.** Terminal lines are a frame, a phrase, then the data:
 
@@ -352,9 +353,15 @@ Two facts invert the usual intuition, so start there:
 | Cost | Value |
 | --- | --- |
 | Embedding model | `paraphrase-multilingual-MiniLM-L12-v2`, ~118M params, 384 dims, CPU torch |
-| Vectors | 47,913 × 384 × 4 B ≈ **70 MB** raw float32 |
-| Chroma on disk | budget **2–3×** raw for the HNSW index (~150–210 MB) |
+| Vectors | 47,993 × 384 × 4 B ≈ **70 MB** raw float32 |
+| Chroma on disk | **~1.5 GB** measured on a full build |
 | Model load on boot | the longest startup step on CPU; `HEALTH_START_PERIOD` must exceed it |
+
+The Chroma figure is measured, not derived: the old 2–3× raw-vector estimate
+(~150–210 MB) holds only if the index were the float matrix alone, but Chroma
+also persists the HNSW graph and its sqlite metadata/source store — hence the
+1.5 GB total, of which `chroma.sqlite3` alone is 1.28 GB. Budget from the
+measured build, not a multiplier.
 
 ### The six knobs
 
@@ -497,7 +504,7 @@ docker compose -f docker/docker-compose.yml --env-file .env --profile tools run 
 
 - **Sample, not whole corpus, by default.** `INGEST_TARGET` defaults to 1,000
   records in OAI order, so a default ingest is an early-page sample rather than a
-  random one. The measured 0.60 assumes the full ~47,913-record corpus; a small
+  random one. The measured 0.60 assumes the full ~47,993-record corpus; a small
   ingest shifts both bands down and needs re-measuring.
 - **Truncated abstracts.** The embedding model truncates at 128 tokens, so
   stored vectors effectively represent the title plus the opening of the
@@ -505,7 +512,7 @@ docker compose -f docker/docker-compose.yml --env-file .env --profile tools run 
 - **Top 100 only.** The service always fetches 100 candidates and filters them in
   Python; there is no pagination or `offset`.
 - **Threshold measured on one corpus.** `0.60` separates relevant from off-topic
-  on the full 47,913-record collection; re-measure on a different corpus. See
+  on the full 47,993-record collection; re-measure on a different corpus. See
   [Why the default is 0.60](#why-the-default-is-060).
 - **No authentication or rate limiting.** Anyone who can reach the port can spend
   Gemini quota.
