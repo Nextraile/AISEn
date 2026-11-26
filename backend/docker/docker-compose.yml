@@ -16,6 +16,7 @@ services:
         # PowerShell: $env:APP_UID=1000; docker compose -f docker/docker-compose.yml --env-file .env up
 
         APP_UID: ${APP_UID:-10001}
+    image: aisen-api:latest
     container_name: aisen-api
     env_file: ../.env
     ports:
