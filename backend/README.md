@@ -310,7 +310,9 @@ hang:
   stores its page cursor, the index build caches finished embedding chunks and
   skips rows already in the collection. `--harvest` therefore tops up to
   `--target` rather than starting over, and `--fresh` is the only way to discard
-  that state. A resume is refused when the corpus or model changed, since the
+  that state. A `--fresh` run that drops a non-empty harvest journal logs
+  `harvest journal discarded | records=<n>`, so the discarded count is visible.
+  A resume is refused when the corpus or model changed, since the
   ids are positional.
 - **Persisted outcome.** Every *successful* run appends one entry to
   `data/history.json` (append-only JSONL, one line per run) with status, stage,
