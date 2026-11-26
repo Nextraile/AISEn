@@ -75,14 +75,22 @@ of the OAI feed, not a random or complete sample of Undip's repository.
 | Stage | State it keeps | What a rerun does |
 |---|---|---|
 | Harvest | `data/temp/harvest.jsonl` (append-only journal of accepted records), `data/temp/harvest_state.json` (page cursor, scan counter, target) | Continues from the stored cursor and tops up to `--target` |
-| Index | `data/temp/index_state.json` (phase, corpus fingerprint, model), `data/temp/index_vectors.npy` (finished embedding chunks) | Skips rows already in the collection and vectors already on disk |
+| Index | `data/temp/index_state.json` (phase, corpus fingerprint, model), `data/temp/index_vectors.npy` (finished embedding chunks) | Skips rows already in the collection and vectors already on disk; a finished collection records `corpus_hash` alongside `embedding_model` |
+
+A finished collection records the `corpus_hash` and `embedding_model` it was
+built from in its own metadata. When a rerun's corpus hash, row count and
+model all match, it logs `index up to date` and returns without loading the
+model or touching the collection, so a completed build is not rebuilt on the
+next `--all` when nothing changed.
 
 `--fresh` is the only thing that throws that state away; without it a rerun
 resumes. A resume is only honoured when the corpus and the model are unchanged —
-the fingerprint covers record count, file size and mtime — because document ids
-are positional (`doc_<index>`): after a re-harvest the same id can name a
-different abstract, so topping up a partial collection would attach the wrong
-vector to it.
+the fingerprint is a sha256 over the embedded text (`"{title}. {description}"`,
+NUL-separated, in corpus order), so it changes when a title or an abstract
+changes, and does not when only `creators`, `date` or `url` do — because
+document ids are positional (`doc_<index>`): after a re-harvest the same id can
+name a different abstract, so topping up a partial collection would attach the
+wrong vector to it.
 
 Stop the API server before a *full* rebuild so it is not querying a collection
 that is being replaced. A resumed build rewrites nothing, so the server can keep
@@ -118,7 +126,9 @@ a similarity. `/ready` reports the metric so this is checkable.
    ```
 
    That harvests `eprints2` into `data/documents.json`, then deletes and
-   recreates the Chroma collection. Use `--harvest` / `--index` to run one stage,
+   recreates the Chroma collection only when the corpus or model changed (or
+   `--fresh` is given); otherwise it reports `index up to date`. Use
+   `--harvest` / `--index` to run one stage,
    `--target N` to change the record count, and `--query "..."` for a
    similarity check against the fresh index. Add `--fresh` to discard the resume
    state; without it, the same command resumes an interrupted run and tops the
@@ -164,10 +174,10 @@ covers harvesting as well as serving.
 - `ingestion/ingest.py` and `service/app.py` both read the same `common.config.SETTINGS` object, so
   ingestion and serving cannot drift onto a different model, database path, or
   collection name.
-- The collection stores the model it was built with in its metadata
-  (`embedding_model`). Changing `EMBEDDING_MODEL` without re-running
-  `python -m ingestion.ingest --index` logs a warning at startup; the scores would otherwise be
-  meaningless without any error.
+- The collection stores the model it was built with and the corpus hash in its
+  metadata (`embedding_model`, `corpus_hash`). Changing `EMBEDDING_MODEL`
+  without re-running `python -m ingestion.ingest --index` logs a warning at
+  startup; the scores would otherwise be meaningless without any error.
 - The embedding model is referenced by name, not by revision. An upstream model
   update would silently produce vectors that no longer match queries.
 

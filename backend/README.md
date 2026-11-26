@@ -509,9 +509,10 @@ docker compose -f docker/docker-compose.yml --env-file .env --profile tools run 
   [Why the default is 0.60](#why-the-default-is-060).
 - **No authentication or rate limiting.** Anyone who can reach the port can spend
   Gemini quota.
-- **No incremental ingestion.** `python -m ingestion.ingest --index` can resume an
-  interrupted build, but a completed build is always replaced wholesale: there is
-  no way to update or delete individual documents.
+- **No incremental ingestion.** `python -m ingestion.ingest --index` resumes an
+  interrupted build, but cannot change one record: there is no way to update or
+  delete individual documents. A rerun over unchanged embedded text is a no-op
+  that logs `index up to date`.
 - **One process, one worker.** The model is loaded once per process.
 - **No CI, linter, or lockfile.** Dependencies are range-pinned only.
 
