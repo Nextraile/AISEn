@@ -256,8 +256,7 @@ when the corpus has nothing relevant.
   "ringkasan_error": null,
   "skor_tertinggi": null,
   "arahan": [
-    "Belum ada dokumen terindeks di basis data.",
-    "Jalankan python -m ingestion.ingest --all untuk mengisi basis data."
+    "Belum ada dokumen terindeks di basis data."
   ]
 }
 ```
