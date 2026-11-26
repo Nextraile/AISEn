@@ -256,8 +256,7 @@ when the corpus has nothing relevant.
   "ringkasan_error": null,
   "skor_tertinggi": null,
   "arahan": [
-    "Belum ada dokumen terindeks di basis data.",
-    "Jalankan python -m ingestion.ingest --all untuk mengisi basis data."
+    "Belum ada dokumen terindeks di basis data."
   ]
 }
 ```
@@ -363,7 +362,7 @@ the live collection, so this is the endpoint to load before a demo.
 ```json
 {
   "status": "ok",
-  "documents": 47915,
+  "documents": 47993,
   "metric": "cosine",
   "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
   "version": "0.3.0",
@@ -372,7 +371,7 @@ the live collection, so this is the endpoint to load before a demo.
   "last_ingest": {
     "status": "ok",
     "stage": "harvest",
-    "records_harvested": 47966,
+    "records_harvested": 47993,
     "records_skipped": 3,
     "documents_indexed": null,
     "resume_from": { "records": 200, "scanned": 3811 }
@@ -461,7 +460,7 @@ Useful for frontend clients written against an earlier build.
 | Ingestion failures | recorded as a failed last run, which failed readiness | `INGEST FAILED` log line only; `history.json` gains an entry only for successful runs |
 | Metadata handling | direct indexing, `KeyError` possible | missing fields become `""` |
 | LLM timeout | 20 s → 8 s | 15 s (measured: real calls run 1–7 s with a tail past 8 s) |
-| Default threshold | `0.5` (a guess) | `0.53`, then `0.60` once measured on the full 47,913-record corpus (noise ≤ 0.559, relevant phrases ≥ 0.74) |
+| Default threshold | `0.5` (a guess) | `0.53`, then `0.60` once measured on the full 47,993-record corpus (noise ≤ 0.559, relevant phrases ≥ 0.74) |
 | `no_results` guidance | "Kemiripan tertinggi …; turunkan threshold di bawah nilai itu." | reports the threshold and best score, no instruction to lower it — an empty result is valid |
 | Ingestion | notebook run by hand | `python -m ingestion.ingest --all` (same harvest, JSON, and Chroma build), resumable per stage |
 

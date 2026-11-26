@@ -2,7 +2,7 @@
 
 Semantic search over research published at Universitas Diponegoro (Undip).
 Ask a question in plain Indonesian or English; the backend embeds it, ranks
-~1,000 harvested eprints by cosine similarity, and optionally summarizes the
+47,993 harvested eprints by cosine similarity, and optionally summarizes the
 matches with citations. The frontend is the search UI: query box, relevance
 slider, result cards, and the AI summary.
 
@@ -38,7 +38,8 @@ Each service has its own `docker-compose.yml` and its own working directory, and
 both declare the same Compose project (`aisen`), so they share one network.
 
 ```powershell
-# 1. Build the index — first run only: harvests and embeds 1,000 records
+# 1. Build the index — first run only: harvests and embeds up to 1,000
+#    records (that 1,000 is the default --target)
 cd backend
 $env:APP_UID='1000'                       # your uid (`id -u` in WSL); persists in this window
 docker compose -f docker/docker-compose.yml --env-file .env --profile tools run --rm tools --all
@@ -88,7 +89,7 @@ uvicorn service.app:app --reload --port 8000 --env-file .env
 
 ```bash
 curl http://localhost:8000/ready
-# {"status":"ok","documents":1000,"metric":"cosine","problems":[],...}
+# {"status":"ok","documents":47993,"metric":"cosine","problems":[],...}
 ```
 
 `GET /health` is liveness only; `GET /ready` is what confirms the index can

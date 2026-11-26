@@ -4,8 +4,9 @@ How the vector database gets built, and the contract the service depends on.
 Everything here happens in `ingestion/ingest.py` — there is no other ingestion path.
 
 > The app reads `./data/vector_db` and refuses to start without it. That
-> directory and `data/documents.json` are git-ignored, so a fresh clone has
-> no data until you run `python -m ingestion.ingest --all`.
+> directory, `data/documents.json`, `data/history.json` and `data/temp/` are
+> git-ignored, so a fresh clone has no data until you run
+> `python -m ingestion.ingest --all`.
 >
 > `data/` itself *is* tracked (an empty directory via `data/.gitkeep`). That
 > matters for Docker: a missing bind-mount source gets created as root, which
@@ -18,7 +19,7 @@ Everything here happens in `ingestion/ingest.py` — there is no other ingestion
 OAI-PMH (eprints2.undip.ac.id/cgi/oai2)
         │  harvest + filter
         ▼
-data/documents.json          (~1,000 records)
+data/documents.json          (47,993 records in the shipped build)
         │  embed "{title}. {description}"
         ▼
 data/vector_db/                 ChromaDB, collection "undip_research_search"
@@ -31,8 +32,8 @@ data/vector_db/                 ChromaDB, collection "undip_research_search"
 | Endpoint | `https://eprints2.undip.ac.id/cgi/oai2` |
 | Metadata format | `oai_dc` |
 | Client | `sickle` |
-| Target | 1,000 valid records |
-| Observed | 1,000 kept out of 5,035 scanned |
+| Target | 1,000 valid records (default; the shipped build used the full feed) |
+| Observed | 47,993 kept out of ~55,649 scanned |
 
 A record is kept when **all** of these hold:
 
@@ -53,8 +54,41 @@ Extraction rules:
 
 Result is written to `data/documents.json`.
 
-Because harvesting stops at 1,000, the indexed corpus is an **early-page sample**
-of the OAI feed, not a random or complete sample of Undip's repository.
+Because harvesting stops at `INGEST_TARGET`, a default run indexes an
+**early-page sample** of the OAI feed, not a random or complete sample of
+Undip's repository. The shipped build raised the target to the whole feed and
+kept 47,993 records.
+
+### Why most of the feed never reaches the corpus
+
+The three checks above are not what thins the feed: most raw OAI records carry
+no abstract at all. Measured on 2,900 captured raw records re-run through
+`is_valid_record`, field presence across the raw records:
+
+| Field | Present |
+|---|---|
+| `relation` / `type` / `identifier` | 98.8% |
+| `format` / `language` / `title` / `creator` | 98.7% |
+| `subject` | 95.8% |
+| `publisher` | 91.7% |
+| `date` | 23.5% |
+| `description` | 7.0% |
+
+The consequence is that the `description` test in `is_valid_record` removes
+about 82% of raw records on its own, while the administrative title check
+(`penilaian sejawat` / `peer_review`) fires roughly once per 3,000 records. The
+corpus is small because most feed records are not papers with abstracts, not
+because the harvester fails.
+
+One number is easy to misread: `records_skipped` in `data/history.json` counts
+only records the harvester could not parse (the `harvest skipped record`
+warnings), **not** records the filter rejected. A run that keeps 5.7% of the
+feed and reports `records_skipped=3` is not evidence that the filter is broken;
+the two counts measure different things.
+
+The sample behind these figures is a partial capture of 2,900 raw records, so
+treat the percentages as representative of the feed's shape, not as exact
+census values.
 
 ## Stage 2 — Embed and index
 
@@ -75,14 +109,25 @@ of the OAI feed, not a random or complete sample of Undip's repository.
 | Stage | State it keeps | What a rerun does |
 |---|---|---|
 | Harvest | `data/temp/harvest.jsonl` (append-only journal of accepted records), `data/temp/harvest_state.json` (page cursor, scan counter, target) | Continues from the stored cursor and tops up to `--target` |
-| Index | `data/temp/index_state.json` (phase, corpus fingerprint, model), `data/temp/index_vectors.npy` (finished embedding chunks) | Skips rows already in the collection and vectors already on disk |
+| Index | `data/temp/index_state.json` (phase, corpus fingerprint, model), `data/temp/index_vectors.npy` (finished embedding chunks) | Skips rows already in the collection and vectors already on disk; a finished collection records `corpus_hash` alongside `embedding_model` |
+
+A finished collection records the `corpus_hash` and `embedding_model` it was
+built from in its own metadata. When a rerun's corpus hash, row count and
+model all match, it logs `index up to date` and returns without loading the
+model or touching the collection, so a completed build is not rebuilt on the
+next `--all` when nothing changed.
 
 `--fresh` is the only thing that throws that state away; without it a rerun
-resumes. A resume is only honoured when the corpus and the model are unchanged —
-the fingerprint covers record count, file size and mtime — because document ids
-are positional (`doc_<index>`): after a re-harvest the same id can name a
-different abstract, so topping up a partial collection would attach the wrong
-vector to it.
+resumes. When `--fresh` discards a non-empty harvest journal it logs
+`harvest journal discarded | records=<n>` so the number of accepted records
+thrown away is visible; a fresh run with no journal to drop logs nothing. A
+resume is only honoured when the corpus and the model are unchanged —
+the fingerprint is a sha256 over the embedded text (`"{title}. {description}"`,
+NUL-separated, in corpus order), so it changes when a title or an abstract
+changes, and does not when only `creators`, `date` or `url` do — because
+document ids are positional (`doc_<index>`): after a re-harvest the same id can
+name a different abstract, so topping up a partial collection would attach the
+wrong vector to it.
 
 Stop the API server before a *full* rebuild so it is not querying a collection
 that is being replaced. A resumed build rewrites nothing, so the server can keep
@@ -118,7 +163,9 @@ a similarity. `/ready` reports the metric so this is checkable.
    ```
 
    That harvests `eprints2` into `data/documents.json`, then deletes and
-   recreates the Chroma collection. Use `--harvest` / `--index` to run one stage,
+   recreates the Chroma collection only when the corpus or model changed (or
+   `--fresh` is given); otherwise it reports `index up to date`. Use
+   `--harvest` / `--index` to run one stage,
    `--target N` to change the record count, and `--query "..."` for a
    similarity check against the fresh index. Add `--fresh` to discard the resume
    state; without it, the same command resumes an interrupted run and tops the
@@ -164,10 +211,10 @@ covers harvesting as well as serving.
 - `ingestion/ingest.py` and `service/app.py` both read the same `common.config.SETTINGS` object, so
   ingestion and serving cannot drift onto a different model, database path, or
   collection name.
-- The collection stores the model it was built with in its metadata
-  (`embedding_model`). Changing `EMBEDDING_MODEL` without re-running
-  `python -m ingestion.ingest --index` logs a warning at startup; the scores would otherwise be
-  meaningless without any error.
+- The collection stores the model it was built with and the corpus hash in its
+  metadata (`embedding_model`, `corpus_hash`). Changing `EMBEDDING_MODEL`
+  without re-running `python -m ingestion.ingest --index` logs a warning at
+  startup; the scores would otherwise be meaningless without any error.
 - The embedding model is referenced by name, not by revision. An upstream model
   update would silently produce vectors that no longer match queries.
 

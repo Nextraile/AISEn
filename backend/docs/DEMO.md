@@ -104,10 +104,10 @@ when something does not cooperate. Written for the prototype as it exists today.
 | Cross-language (English) | `coral reef ecosystem` | `full`, ~5 papers — shows the model is multilingual |
 | Deliberate `no_results` | `faktor risiko stunting` with `"threshold": 0.85` | `no_results`, `skor_tertinggi` ~0.47, `arahan` states the threshold and best score without telling you to lower it |
 
-All three were verified against the 1,000-record corpus. Avoid long, very specific
-English phrases such as `machine learning for sentiment analysis`: this repository
-is weighted toward Indonesian-language papers, so such queries land around 0.47
-and return `no_results` at the default.
+All three were verified against the 47,993-record corpus. Avoid long, very
+specific English phrases such as `machine learning for sentiment analysis`:
+this repository is weighted toward Indonesian-language papers, so such queries
+land around 0.47 and return `no_results` at the default.
 
 Show the third one on purpose: it demonstrates that the API explains itself
 instead of looking broken, and that an empty answer is correct when nothing
@@ -129,15 +129,15 @@ clears the relevance bar.
 
 Answers that are honest and short. Do not overclaim.
 
-- **How many papers?** 1,000 indexed, selected from about 5,035 records scanned in
-  the OAI feed — an early-page sample, not a random one.
+- **How many papers?** 47,993 indexed, selected from about 55,649 records
+  scanned in the OAI feed — an early-page sample, not a random one.
 - **How does search work?** The query and each paper (title + abstract) are
   embedded with the same multilingual model; we rank by cosine similarity and
   apply a minimum-similarity threshold.
 - **Why do you truncate abstracts?** The model handles 128 tokens, so vectors
   represent the title plus the start of the abstract. A production version would
   chunk or summarize first.
-- **Why is the threshold 0.60?** Measured on the full 47,913-record corpus:
+- **Why is the threshold 0.60?** Measured on the full 47,993-record corpus:
   relevant phrases put the best hit at 0.74–0.84, while off-topic queries top
   out at 0.559. `0.60` sits in that gap, so it keeps real matches and rejects
   noise. You can reproduce the scores with
