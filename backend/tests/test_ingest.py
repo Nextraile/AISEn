@@ -6,8 +6,10 @@ from ingestion import ingest
 
 
 class FakeRecord:
-    def __init__(self, metadata):
+    def __init__(self, metadata, identifier=None):
         self.metadata = metadata
+        if identifier is not None:
+            self.header = type("Header", (), {"identifier": identifier})()
 
 
 def make_metadata(title, description, url="http://x/1.pdf", creators=None, date=None):
@@ -23,6 +25,17 @@ def make_metadata(title, description, url="http://x/1.pdf", creators=None, date=
 
 
 # ---------- harvest ----------
+def harvest_into(tmp_path, **kwargs):
+    """Harvest with its resume state confined to `tmp_path`, as production does.
+
+    Without this the journal lands in the real `data/temp/` and one test would
+    resume from another test's pages.
+    """
+    kwargs.setdefault("output", tmp_path / "clean.json")
+    kwargs["temp_dir"] = tmp_path / "temp"
+    return ingest.harvest(**kwargs)
+
+
 def test_harvest_skips_admin_short_and_broken_records(tmp_path):
     records = [
         object(),  # record without `.metadata` (deleted/broken)
@@ -32,7 +45,7 @@ def test_harvest_skips_admin_short_and_broken_records(tmp_path):
     ]
 
     output = tmp_path / "clean.json"
-    items = ingest.harvest(target=10, output=output, records=records)
+    items = harvest_into(tmp_path, target=10, records=records)
 
     assert len(items) == 1
     assert items[0]["title"] == "Layak"
@@ -42,10 +55,8 @@ def test_harvest_skips_admin_short_and_broken_records(tmp_path):
 
 
 def test_harvest_fills_default_date(tmp_path):
-    items = ingest.harvest(
-        target=10,
-        output=tmp_path / "clean.json",
-        records=[FakeRecord(make_metadata("Judul", "a" * 60))],
+    items = harvest_into(
+        tmp_path, target=10, records=[FakeRecord(make_metadata("Judul", "a" * 60))]
     )
     # Stored as data (it is displayed to users), so it stays Indonesian.
     assert items[0]["date"] == "Tanggal tidak diketahui"
@@ -53,24 +64,355 @@ def test_harvest_fills_default_date(tmp_path):
 
 def test_harvest_stops_at_target(tmp_path):
     records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(10)]
-    items = ingest.harvest(target=3, output=tmp_path / "clean.json", records=records)
-    assert len(items) == 3
+    assert len(harvest_into(tmp_path, target=3, records=records)) == 3
 
 
 def test_harvest_rejects_bad_target(tmp_path):
     with pytest.raises(ValueError, match="--target"):
-        ingest.harvest(target=0, output=tmp_path / "clean.json", records=[])
+        harvest_into(tmp_path, target=0, records=[])
 
 
 def test_harvest_drops_empty_creator_entries(tmp_path):
     # An empty <dc:creator/> reaches us as None inside the list. The full-corpus
     # harvest contains such records, and joining them used to abort the index.
-    items = ingest.harvest(
+    items = harvest_into(
+        tmp_path,
         target=10,
-        output=tmp_path / "clean.json",
         records=[FakeRecord(make_metadata("Judul", "a" * 60, creators=[None, "A"]))],
     )
     assert items[0]["creators"] == ["A"]
+
+
+def test_harvest_skips_a_record_it_cannot_parse(tmp_path, caplog):
+    # One malformed record must not throw away the records around it. The
+    # repository serves a few of these, and the cursor is page-granular, so the
+    # record will not be seen again -- the warning is the only trace.
+    class Exploding(dict):
+        def get(self, key, default=None):
+            if key == "title":
+                raise TypeError("sequence item 1: expected str instance, NoneType found")
+            return super().get(key, default)
+
+    records = [
+        FakeRecord(make_metadata("Baik 1", "a" * 60), identifier="oai:good1"),
+        FakeRecord(Exploding(make_metadata("Rusak", "a" * 60)), identifier="oai:bad"),
+        FakeRecord(make_metadata("Baik 2", "a" * 60), identifier="oai:good2"),
+    ]
+    stats: dict = {}
+
+    with caplog.at_level("WARNING"):
+        items = harvest_into(tmp_path, target=10, records=records, stats=stats)
+
+    assert [item["title"] for item in items] == ["Baik 1", "Baik 2"]
+    assert stats["skipped"] == 1
+
+    skipped = [r for r in caplog.records if r.getMessage() == "harvest skipped record"]
+    assert len(skipped) == 1
+    assert skipped[0].extra_data == {
+        "id": "oai:bad",
+        "reason": "TypeError: sequence item 1: expected str instance, NoneType found",
+    }
+
+
+def test_harvest_skipped_count_reaches_the_run_summary(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS,
+            ingest_json_path=str(data_dir / "d.json"),
+            temp_dir=str(data_dir / "temp"),
+        ),
+    )
+
+    def fake_harvest(**kwargs):
+        kwargs["stats"].update({"scanned": 900, "skipped": 3})
+        return [{"title": "A"}]
+
+    monkeypatch.setattr(ingest, "harvest", fake_harvest)
+
+    assert ingest.main(["--harvest", "--fresh"]) == 0
+
+    entry = json.loads((data_dir / "history.json").read_text(encoding="utf-8"))
+    assert entry["records_skipped"] == 3
+    assert entry["records_harvested"] == 1
+
+
+def test_harvest_journals_records_and_writes_output(tmp_path):
+    records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(3)]
+
+    harvest_into(tmp_path, target=10, records=records)
+
+    journal = tmp_path / "temp" / "harvest.jsonl"
+    lines = [json.loads(l) for l in journal.read_text(encoding="utf-8").splitlines()]
+    assert [entry["title"] for entry in lines] == ["J0", "J1", "J2"]
+    # The identifier rides along so a replayed page can be deduplicated...
+    assert all("_identifier" in entry for entry in lines)
+    # ...but it must not leak into the document the index build consumes.
+    output = json.loads((tmp_path / "clean.json").read_text(encoding="utf-8"))
+    assert all("_identifier" not in item for item in output)
+
+
+def test_harvest_resumes_from_the_journal_without_refetching(tmp_path):
+    first = [
+        FakeRecord(make_metadata(f"A{i}", "a" * 60), identifier=f"oai:{i}")
+        for i in range(2)
+    ]
+    harvest_into(tmp_path, target=2, records=first)
+
+    # Second run: the endpoint offers the same records again from the top.
+    second = [
+        FakeRecord(make_metadata("A0", "a" * 60), identifier="oai:0"),
+        FakeRecord(make_metadata("A1", "a" * 60), identifier="oai:1"),
+        FakeRecord(make_metadata("B0", "a" * 60), identifier="oai:2"),
+    ]
+    items = harvest_into(tmp_path, target=3, records=second)
+
+    assert [item["title"] for item in items] == ["A0", "A1", "B0"]
+
+
+def test_harvest_at_target_does_not_append_one_more(tmp_path):
+    # Resuming with the target already met must be a no-op: a top-up request for
+    # the same number used to fetch one extra record.
+    records = [
+        FakeRecord(make_metadata(f"A{i}", "a" * 60), identifier=f"oai:{i}")
+        for i in range(2)
+    ]
+    harvest_into(tmp_path, target=2, records=records)
+
+    again = harvest_into(
+        tmp_path,
+        target=2,
+        records=[FakeRecord(make_metadata("X", "a" * 60), identifier="oai:x")],
+    )
+
+    assert [item["title"] for item in again] == ["A0", "A1"]
+
+
+def test_harvest_records_without_an_identifier_are_still_kept(tmp_path):
+    # Dedup depends on the header identifier; a stream without one must still
+    # yield documents rather than silently dropping them.
+    items = harvest_into(
+        tmp_path, target=10, records=[FakeRecord(make_metadata("Tanpa ID", "a" * 60))]
+    )
+    assert [item["title"] for item in items] == ["Tanpa ID"]
+
+
+def test_harvest_fresh_flag_discards_the_journal(tmp_path):
+    harvest_into(
+        tmp_path, target=1, records=[FakeRecord(make_metadata("Lama", "a" * 60))]
+    )
+
+    items = harvest_into(
+        tmp_path,
+        target=10,
+        records=[FakeRecord(make_metadata("Baru", "a" * 60))],
+        fresh=True,
+    )
+
+    assert [item["title"] for item in items] == ["Baru"]
+    output = json.loads((tmp_path / "clean.json").read_text(encoding="utf-8"))
+    assert [item["title"] for item in output] == ["Baru"]
+
+
+def test_harvest_survives_a_torn_journal_line(tmp_path):
+    journal = tmp_path / "temp" / "harvest.jsonl"
+    journal.parent.mkdir(parents=True)
+    good = {
+        "title": "Utuh",
+        "creators": [],
+        "description": "a" * 60,
+        "url": "u",
+        "date": "2024",
+        "_identifier": "x1",
+    }
+    journal.write_text(
+        json.dumps(good) + '\n{"title": "terpo', encoding="utf-8"
+    )
+
+    items = harvest_into(
+        tmp_path, target=10, records=[FakeRecord(make_metadata("Baru", "a" * 60))]
+    )
+
+    assert [item["title"] for item in items] == ["Utuh", "Baru"]
+
+
+# ---------- harvest: OAI page boundaries ----------
+class FakeRequest:
+    def __init__(self, token):
+        self.attrib = {"resumptionToken": token} if token else {}
+
+
+class FakePageXML:
+    """The parts of an OAI-PMH response the harvester reads."""
+
+    def __init__(self, request_token, record_count):
+        self._request_token = request_token
+        self._record_count = record_count
+
+    def find(self, tag):
+        return FakeRequest(self._request_token) if tag.endswith("request") else None
+
+    def findall(self, tag):
+        return [object()] * self._record_count
+
+
+class FakeOaiResponse:
+    def __init__(self, xml):
+        self.xml = xml
+
+
+class FakeToken:
+    def __init__(self, token):
+        self.token = token
+
+
+class FakePagedStream:
+    """Mimics the two sickle behaviours the resume design depends on.
+
+    Both were measured against the live endpoint:
+
+    * the parsed response carries its own `<request resumptionToken="...">`
+      naming the page being read -- this is the cursor a resume must send back;
+    * `resumption_token` already names the NEXT page before the current page's
+      first record is yielded, so storing it skips a page on resume.
+    """
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.oai_response = None
+        self.resumption_token = None
+        self._records = self._iterate()
+
+    def _set_page(self, number):
+        page = self.pages[number]
+        request_token = None if number == 0 else f"offset={number * 100}"
+        self.oai_response = FakeOaiResponse(FakePageXML(request_token, len(page)))
+        self.resumption_token = FakeToken(f"offset={(number + 1) * 100}")
+
+    def _iterate(self):
+        for number, page in enumerate(self.pages):
+            self._set_page(number)
+            for record in page:
+                yield record
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._records)
+
+
+def paged(title_prefix, count):
+    return [
+        FakeRecord(
+            make_metadata(f"{title_prefix}{i}", "a" * 60),
+            identifier=f"oai:{title_prefix}{i}",
+        )
+        for i in range(count)
+    ]
+
+
+def test_harvest_commits_the_cursor_at_each_page_boundary(tmp_path):
+    # The cursor advances per page, not only at the end: that is what makes an
+    # interrupted run resume instead of re-fetching the whole corpus.
+    stream = FakePagedStream([paged("A", 2), paged("B", 2), paged("C", 2)])
+
+    seen = []
+    original = ingest._atomic_write
+
+    def spy(path, text):
+        if path.name == "harvest_state.json":
+            seen.append(json.loads(text))
+        original(path, text)
+
+    ingest._atomic_write = spy
+    try:
+        harvest_into(tmp_path, target=100, records=stream)
+    finally:
+        ingest._atomic_write = original
+
+    # Page 0 was requested without a token, so there is nothing to resume from
+    # until page 1 has been read; after that the cursor names that page. The
+    # final page leaves an empty buffer, so no fourth write happens.
+    assert [entry["next_token"] for entry in seen] == [
+        None,
+        "offset=100",
+        "offset=200",
+    ]
+    assert [entry["valid"] for entry in seen] == [2, 4, 6]
+
+
+def test_harvest_cursor_names_the_page_read_not_the_next_one(tmp_path):
+    # The regression this design exists for: sickle's own token is one page
+    # ahead, and storing it lost 12 records on a live resume.
+    pages = [paged("A", 2), paged("B", 2)]
+    harvest_into(tmp_path, target=3, records=FakePagedStream(pages))
+
+    state = json.loads(
+        (tmp_path / "temp" / "harvest_state.json").read_text(encoding="utf-8")
+    )
+    # Stopped mid-page-2 (2 from A + 1 from B), so the page being read is still
+    # page 2 -- and sickle's own token says offset=200, i.e. page 3.
+    assert state["next_token"] == "offset=100"
+    assert state["valid"] == 3
+
+
+def test_harvest_resume_sends_the_saved_cursor(tmp_path, monkeypatch):
+    pages = [paged("A", 2), paged("B", 2)]
+    harvest_into(tmp_path, target=3, records=FakePagedStream(pages))
+
+    asked = {}
+
+    class FakeSickle:
+        def __init__(self, endpoint):
+            pass
+
+        def ListRecords(self, **params):
+            asked.update(params)
+            return iter([FakeRecord(make_metadata("Z", "a" * 60), identifier="oai:z")])
+
+    import sickle
+
+    monkeypatch.setattr(sickle, "Sickle", FakeSickle)
+    items = harvest_into(tmp_path, target=5, records=None)
+
+    assert asked["resumptionToken"] == "offset=100"
+    assert asked["metadataPrefix"] == "oai_dc"
+    # The resume continues from page 2; the fake endpoint stands in for it and
+    # yields Z. Records of page 1 are not refetched.
+    assert [item["title"] for item in items] == ["A0", "A1", "B0", "Z"]
+
+
+def test_harvest_first_page_has_no_cursor_to_resume_from(tmp_path, monkeypatch):
+    # A crash during the first page restarts from the top: the request carried
+    # no token, so nothing else is possible.
+    harvest_into(tmp_path, target=10, records=FakePagedStream([paged("A", 2)]))
+
+    state = json.loads(
+        (tmp_path / "temp" / "harvest_state.json").read_text(encoding="utf-8")
+    )
+    assert state["next_token"] is None
+
+    asked = {}
+
+    class FakeSickle:
+        def __init__(self, endpoint):
+            pass
+
+        def ListRecords(self, **params):
+            asked.update(params)
+            return iter([FakeRecord(make_metadata("Z", "a" * 60), identifier="oai:z")])
+
+    import sickle
+
+    monkeypatch.setattr(sickle, "Sickle", FakeSickle)
+    harvest_into(tmp_path, target=3, records=None)
+
+    assert "resumptionToken" not in asked
 
 
 # ---------- index ----------
@@ -187,6 +529,280 @@ def test_build_index_rejects_empty_json(tmp_path):
         ingest.build_index(json_path=json_path, model=FakeModel(), client=FakeClient())
 
 
+class CountingCollection(FakeCollection):
+    """A fake collection that has what the resume logic reads back."""
+
+    def get(self, include):
+        return {"ids": [i for batch in self.batches for i in batch["ids"]]}
+
+
+class CountingClient(FakeClient):
+    def __init__(self, collection=None, fail_after=None, refuse_delete=False):
+        super().__init__()
+        self.collection = collection or CountingCollection()
+        self.fail_after = fail_after
+        self.refuse_delete = refuse_delete
+
+    def delete_collection(self, name):
+        if self.refuse_delete:
+            raise AssertionError("a resume must not delete the collection")
+        super().delete_collection(name)
+
+    def get_or_create_collection(self, name, metadata):
+        self.created_metadata = metadata
+        collection = self.collection
+        client = self
+        fail_after = client.fail_after
+
+        class Guarded:
+            metadata = collection.metadata
+
+            def add(self, ids, embeddings, metadatas, documents):
+                added = collection.count()
+                if fail_after is not None:
+                    remaining = fail_after - added
+                    if remaining <= 0:
+                        raise KeyboardInterrupt("killed mid-insert")
+                    if remaining < len(ids):
+                        collection.add(
+                            ids=ids[:remaining],
+                            embeddings=embeddings[:remaining],
+                            metadatas=metadatas[:remaining],
+                            documents=documents[:remaining],
+                        )
+                        raise KeyboardInterrupt("killed mid-insert")
+                collection.add(
+                    ids=ids,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    documents=documents,
+                )
+
+            def count(self):
+                return collection.count()
+
+            def get(self, include):
+                return collection.get(include)
+
+        return Guarded()
+
+
+def test_index_resume_skips_rows_already_stored(tmp_path):
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    # First run dies after storing 2 of the 4 rows.
+    first = CountingClient(fail_after=2)
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=first,
+            batch_size=2,
+            temp_dir=temp,
+        )
+    assert first.deleted == ingest.SETTINGS.collection_name
+    assert first.collection.count() == 2
+
+    # Second run: same corpus, so it continues. The collection survives and only
+    # the missing rows are embedded and added.
+    model = CountingModel()
+    total = ingest.build_index(
+        json_path=json_path,
+        model=model,
+        client=CountingClient(collection=first.collection, refuse_delete=True),
+        batch_size=2,
+        temp_dir=temp,
+    )
+
+    assert total == 4
+    stored = [i for batch in first.collection.batches for i in batch["ids"]]
+    assert stored == ["doc_0", "doc_1", "doc_2", "doc_3"]
+    # Only the two missing rows were added, and (because the first run had
+    # finished encoding before it died) no document was embedded again.
+    assert model.calls == []
+
+
+def test_index_resume_after_the_encode_phase(tmp_path):
+    # A crash during encoding leaves vectors on disk; the rerun must not start
+    # the model again from scratch.
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    calls = []
+
+    class DyingModel(FakeModel):
+        def encode(self, documents, batch_size=64, show_progress_bar=False):
+            calls.append(list(documents))
+            if len(calls) > 1:
+                raise KeyboardInterrupt("killed mid-encode")
+            return FakeEmbeddings([[1.0, 0.0] for _ in documents])
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=DyingModel(),
+            client=CountingClient(),
+            embed_chunk_size=2,
+            temp_dir=temp,
+        )
+
+    resumed_calls = []
+
+    class ResumedModel(FakeModel):
+        def encode(self, documents, batch_size=64, show_progress_bar=False):
+            resumed_calls.append(list(documents))
+            return FakeEmbeddings([[1.0, 0.0] for _ in documents])
+
+    client = CountingClient()
+    total = ingest.build_index(
+        json_path=json_path,
+        model=ResumedModel(),
+        client=client,
+        embed_chunk_size=2,
+        temp_dir=temp,
+    )
+
+    assert total == 4
+    # Only the two documents whose chunk never finished were encoded.
+    assert resumed_calls == [["Judul 2. abstrak", "Judul 3. abstrak"]]
+    assert client.collection.count() == 4
+
+
+def test_index_restarts_when_the_corpus_changed(tmp_path):
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            batch_size=2,
+            temp_dir=temp,
+        )
+
+    # Same path, different content: `doc_2` may now be a different abstract, so
+    # a partial collection cannot be topped up.
+    _write_json(tmp_path, n=5)
+    client = CountingClient()
+    total = ingest.build_index(
+        json_path=json_path, model=FakeModel(), client=client, temp_dir=temp
+    )
+
+    assert total == 5
+    assert client.deleted == ingest.SETTINGS.collection_name
+    assert [len(b["ids"]) for b in client.collection.batches] == [5]
+
+
+def test_index_restarts_when_the_model_changed(tmp_path, monkeypatch):
+    import dataclasses
+
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            batch_size=2,
+            temp_dir=temp,
+        )
+
+    # A partial collection embedded with another model is not a prefix of this
+    # build: the stored vectors and the query model would disagree.
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(ingest.SETTINGS, model_name="other/model"),
+    )
+    client = CountingClient()
+    total = ingest.build_index(
+        json_path=json_path, model=FakeModel(), client=client, temp_dir=temp
+    )
+
+    assert total == 4
+    assert client.deleted == ingest.SETTINGS.collection_name
+
+
+def test_index_resume_after_an_insert_kill_reuses_the_complete_cache(tmp_path):
+    # A kill during inserting leaves a *finished* encode cache behind. The
+    # resume must use it: re-encoding 48k abstracts because the insert was
+    # interrupted would be the most expensive possible way to recover.
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            embed_chunk_size=2,
+            temp_dir=temp,
+        )
+    state = json.loads((temp / "index_state.json").read_text(encoding="utf-8"))
+    assert state["phase"] == "building"
+    assert (temp / "index_vectors.npy").exists()
+
+    model = CountingModel()
+    ingest.build_index(
+        json_path=json_path,
+        model=model,
+        client=CountingClient(),
+        embed_chunk_size=2,
+        temp_dir=temp,
+    )
+
+    # Nothing was encoded again; the whole cache was reused.
+    assert model.calls == []
+
+
+def test_index_fresh_flag_clears_the_state(tmp_path):
+    json_path = _write_json(tmp_path, n=4)
+    temp = tmp_path / "temp"
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest.build_index(
+            json_path=json_path,
+            model=FakeModel(),
+            client=CountingClient(fail_after=2),
+            batch_size=2,
+            temp_dir=temp,
+        )
+    assert (temp / "index_state.json").exists()
+
+    client = CountingClient()
+    ingest.build_index(
+        json_path=json_path,
+        model=FakeModel(),
+        client=client,
+        fresh=True,
+        temp_dir=temp,
+    )
+
+    assert client.deleted == ingest.SETTINGS.collection_name
+    # The marker and the cache are gone once the build finishes, so a later run
+    # cannot resume against a build that already completed.
+    assert not (temp / "index_state.json").exists()
+    assert not (temp / "index_vectors.npy").exists()
+
+
+def test_successful_index_leaves_no_resume_state(tmp_path):
+    json_path = _write_json(tmp_path)
+    temp = tmp_path / "temp"
+
+    ingest.build_index(
+        json_path=json_path,
+        model=FakeModel(),
+        client=CountingClient(),
+        temp_dir=temp,
+    )
+
+    assert not (temp / "index_state.json").exists()
+    assert not (temp / "index_vectors.npy").exists()
+
+
 class CountingModel(FakeModel):
     def __init__(self):
         self.calls = []
@@ -212,9 +828,9 @@ def test_encode_in_chunks_makes_one_call_per_chunk(tmp_path):
 
 def test_harvest_accepts_a_custom_progress_every(tmp_path):
     records = [FakeRecord(make_metadata(f"J{i}", "a" * 60)) for i in range(5)]
-    items = ingest.harvest(
+    items = harvest_into(
+        tmp_path,
         target=10,
-        output=tmp_path / "clean.json",
         records=records,
         progress_every=2,
     )
@@ -235,32 +851,48 @@ def test_ingest_lock_refuses_a_second_writer(tmp_path):
         pass
 
 
-def test_run_summary_records_outcome(tmp_path, monkeypatch):
+def test_run_summary_appends_to_history(tmp_path, monkeypatch):
     import dataclasses
 
+    data_dir = tmp_path / "data"
     monkeypatch.setattr(
         ingest,
         "SETTINGS",
         dataclasses.replace(
-            ingest.SETTINGS, ingest_json_path=str(tmp_path / "d.json")
+            ingest.SETTINGS, ingest_json_path=str(data_dir / "d.json")
         ),
     )
+
     ingest._write_run_summary(
-        status="failed",
-        stage="index",
+        status="ok",
+        stage="harvest",
         started_at="2026-01-01T00:00:00+00:00",
         duration_s=12.5,
         counts={"records": 5, "documents": 3},
-        error="TypeError: boom",
+        resume_from={"records": 200, "scanned": 800},
     )
-    payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["records_harvested"] == 5
-    assert payload["documents_indexed"] == 3
-    assert payload["error"] == "TypeError: boom"
+    ingest._write_run_summary(
+        status="ok",
+        stage="index",
+        started_at="2026-01-02T00:00:00+00:00",
+        duration_s=3.0,
+        counts={"records": 500},
+    )
+
+    # Append-only JSONL, one line per run, and the first entry survives intact.
+    lines = (data_dir / "history.json").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+
+    first, second = (json.loads(line) for line in lines)
+    assert first["records_harvested"] == 5
+    assert first["documents_indexed"] == 3
+    assert first["resume_from"] == {"records": 200, "scanned": 800}
+    # A run that started from scratch says so, rather than omitting the key.
+    assert second["resume_from"] is None
+    assert second["stage"] == "index"
 
 
-def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, caplog):
+def test_failed_run_does_not_touch_history(tmp_path, monkeypatch, caplog):
     # The incident this guards: a traceback scrolls past and a --rm container
     # takes the only copy with it, so nothing says the run failed.
     import dataclasses
@@ -290,10 +922,64 @@ def test_main_records_a_failed_run_and_exits_non_zero(tmp_path, monkeypatch, cap
     assert failed[0].extra_data["stage"] == "harvest"
     assert failed[0].extra_data["error"].startswith("TypeError: sequence item 1")
 
-    payload = json.loads((tmp_path / "last_ingest.json").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["stage"] == "harvest"
-    assert payload["error"].startswith("TypeError: sequence item 1")
+    # A failure must not be appended: /ready reads the last line as the state of
+    # the data, and a failed run produced none.
+    assert not (tmp_path / "history.json").exists()
+
+
+def test_successful_run_records_what_it_resumed_from(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS,
+            ingest_json_path=str(data_dir / "d.json"),
+            temp_dir=str(data_dir / "temp"),
+        ),
+    )
+    journal = data_dir / "temp" / "harvest.jsonl"
+    journal.parent.mkdir(parents=True)
+    journal.write_text('{"title": "Lama"}\n{"title": "Lama 2"}\n', encoding="utf-8")
+    (data_dir / "temp" / "harvest_state.json").write_text(
+        json.dumps({"next_token": "offset%3D100", "scanned": 812, "valid": 2}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        ingest,
+        "harvest",
+        lambda **kwargs: [{"title": "Lama"}, {"title": "Lama 2"}, {"title": "Baru"}],
+    )
+
+    assert ingest.main(["--harvest"]) == 0
+
+    entry = json.loads((data_dir / "history.json").read_text(encoding="utf-8"))
+    assert entry["records_harvested"] == 3
+    assert entry["resume_from"] == {"records": 2, "scanned": 812}
+
+
+def test_fresh_run_records_no_resume_state(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS,
+            ingest_json_path=str(data_dir / "d.json"),
+            temp_dir=str(data_dir / "temp"),
+        ),
+    )
+    monkeypatch.setattr(ingest, "harvest", lambda **kwargs: [{"title": "A"}])
+
+    assert ingest.main(["--harvest"]) == 0
+
+    entry = json.loads((data_dir / "history.json").read_text(encoding="utf-8"))
+    assert entry["resume_from"] is None
 
 
 # ---------- query demo ----------

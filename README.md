@@ -141,8 +141,9 @@ guidance instead of a list.
 
 ## Data is not in the repository
 
-`backend/data/vector_db/`, `backend/data/documents.json`, and
-`backend/data/last_ingest.json` are git-ignored, but `backend/data/` itself is
+`backend/data/vector_db/`, `backend/data/documents.json`,
+`backend/data/history.json`, and `backend/data/temp/` are git-ignored, but
+`backend/data/` itself is
 committed (an empty directory via `data/.gitkeep`) so Docker never has to
 create it as root. A fresh clone has no index. Build it with either path:
 
@@ -155,5 +156,7 @@ cd backend && docker compose -f docker/docker-compose.yml --env-file .env --prof
 ```
 
 Both harvest the Undip OAI-PMH feed, embed the records, and create the
-collection. `ingestion/ingest.py` deletes and recreates the collection, so re-running is
-a full rebuild, not an update.
+collection. Both stages are resumable: rerun the same command after an
+interruption and it continues from where it stopped (a harvest tops up to
+`--target`), keeping its progress in `data/temp/`. Add `--fresh` to throw that
+state away and rebuild from scratch.

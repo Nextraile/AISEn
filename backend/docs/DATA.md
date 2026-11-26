@@ -69,9 +69,25 @@ of the OAI feed, not a random or complete sample of Undip's repository.
 | Insert batch | 1,000 (Chroma rejects batches above ~5,461) |
 | Document IDs | `doc_0`, `doc_1`, … |
 
-**`ingestion/ingest.py` deletes the collection first**, then recreates it. Re-running it
-wipes every vector; there is no incremental update path. Stop the API server
-before re-ingesting so it is not querying a collection that is being replaced.
+**`ingestion/ingest.py` takes a single writer lock** and records its progress under
+`data/temp/`, so both stages are resumable:
+
+| Stage | State it keeps | What a rerun does |
+|---|---|---|
+| Harvest | `data/temp/harvest.jsonl` (append-only journal of accepted records), `data/temp/harvest_state.json` (page cursor, scan counter, target) | Continues from the stored cursor and tops up to `--target` |
+| Index | `data/temp/index_state.json` (phase, corpus fingerprint, model), `data/temp/index_vectors.npy` (finished embedding chunks) | Skips rows already in the collection and vectors already on disk |
+
+`--fresh` is the only thing that throws that state away; without it a rerun
+resumes. A resume is only honoured when the corpus and the model are unchanged —
+the fingerprint covers record count, file size and mtime — because document ids
+are positional (`doc_<index>`): after a re-harvest the same id can name a
+different abstract, so topping up a partial collection would attach the wrong
+vector to it.
+
+Stop the API server before a *full* rebuild so it is not querying a collection
+that is being replaced. A resumed build rewrites nothing, so the server can keep
+serving the partially built collection if you accept that it answers from fewer
+documents until the run finishes.
 
 The model truncates at 128 tokens, so a stored vector effectively represents the
 title plus the opening of the abstract — not the whole document.
@@ -104,7 +120,9 @@ a similarity. `/ready` reports the metric so this is checkable.
    That harvests `eprints2` into `data/documents.json`, then deletes and
    recreates the Chroma collection. Use `--harvest` / `--index` to run one stage,
    `--target N` to change the record count, and `--query "..."` for a
-   similarity check against the fresh index.
+   similarity check against the fresh index. Add `--fresh` to discard the resume
+   state; without it, the same command resumes an interrupted run and tops the
+   harvest up to `--target`.
 
    Without Python on the host, the same script ships in the `tools` Compose
    profile (the serving image does not contain it):
@@ -125,9 +143,11 @@ a similarity. `/ready` reports the metric so this is checkable.
    # status == "ok", documents == number of harvested records, metric == "cosine"
    ```
 
-   A failed run is recorded too: `/ready` puts `last ingest failed: …` in
-   `problems`, and `data/last_ingest.json` holds the stage, timings, counts, and
-   error.
+   Every *successful* run appends one entry to `data/history.json` (append-only
+   JSONL) with the stage, timings, counts, skipped-record count, and
+   `resume_from`. `/ready` reports the last entry as `last_ingest`. A failed run
+   appends nothing — it produced no data — and is reported by the final
+   `INGEST FAILED | stage=…, error="…"` line instead.
 
 4. Re-check the threshold on the new data with `python -m ingestion.ingest --query "<phrase>"`
    (see the measured table in the README). If relevant and off-topic scores no
@@ -156,9 +176,10 @@ covers harvesting as well as serving.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ModuleNotFoundError: sickle` | Dependencies not installed | `pip install -r requirements.txt` |
-| Harvest logs an exception and stops | OAI endpoint unreachable or rate-limited | Retry later; check the endpoint in a browser |
-| Fewer than 1,000 records saved | The OAI stream ended early | Read the log and re-run; the count is not a filter problem |
-| `data/documents.json` missing after an error | `json.dump` only runs after a successful harvest loop | Re-run `python -m ingestion.ingest --harvest` |
+| Harvest logs an exception and stops | OAI endpoint unreachable or rate-limited | Retry later; the run resumes from its cursor. Check the endpoint in a browser |
+| `harvest skipped record` warnings | Records whose fields cannot be parsed | Expected in small numbers; the count is in `data/history.json` as `records_skipped` |
+| Harvest saved fewer records than `--target` | The OAI stream ended before the target | Read the log; the count is not a filter problem |
+| `data/documents.json` missing after an error | The first page never completed | Re-run `python -m ingestion.ingest --harvest`; it resumes from the stored cursor |
 | Chroma rejects an insert batch | Batch over the ~5,461 cap | Keep the 1,000-record batching |
 | `documents: 0` in `/ready` after ingest | Wrong `CHROMA_DB_PATH` (relative to CWD) | Run `ingestion/ingest.py` and the server from `backend/` |
 | Search results look random | Collection not built with `hnsw:space=cosine` | Recreate it with `python -m ingestion.ingest --index` |

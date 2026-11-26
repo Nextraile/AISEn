@@ -43,19 +43,30 @@ GUIDANCE = [
 
 log = configure_logging("aisen.search")
 
-LAST_INGEST_PATH = Path(SETTINGS.ingest_json_path).parent / "last_ingest.json"
+HISTORY_PATH = Path(SETTINGS.ingest_json_path).parent / "history.json"
 
 
 def _last_ingest() -> dict | None:
-    """Read the summary the ingestion CLI wrote, if it is reachable.
+    """The most recent successful ingestion run, or None if none is recorded.
 
-    The container mounts `./data`, so this is the same file `ingestion/ingest.py` wrote on
-    the host. A missing file just means "no ingest recorded yet".
+    `data/history.json` is append-only JSONL (one entry per successful run), so
+    the answer is the last parseable line. The container mounts `./data`, so
+    this is the same file `ingestion/ingest.py` wrote on the host. A missing
+    file just means "no ingest recorded yet", and a torn final line from an
+    interrupted append is skipped rather than reported as data.
     """
     try:
-        return json.loads(LAST_INGEST_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        lines = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
         return None
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    return None
 
 
 def _uptime_seconds(target_app: FastAPI) -> float | None:
@@ -412,7 +423,7 @@ def ready() -> JSONResponse:
 
     Returns 503 with a `problems` list when the collection is missing, empty,
     not cosine, or built with a different model. `last_ingest` is the summary
-    the CLI wrote, so "the last ingest failed" is visible without reading logs.
+    the CLI appended to `data/history.json` for the most recent successful run.
     """
     problems: list[str] = []
     documents = 0
@@ -443,11 +454,10 @@ def ready() -> JSONResponse:
                 f"EMBEDDING_MODEL is '{SETTINGS.model_name}': re-run 'python -m ingestion.ingest --index'"
             )
 
+    # `data/history.json` only ever gains entries for successful runs, so there
+    # is no failure state to report here; it is surfaced at the end of the run
+    # by the CLI instead.
     last_ingest = _last_ingest()
-    if last_ingest and last_ingest.get("status") == "failed":
-        problems.append(
-            f"last ingest failed: {last_ingest.get('error') or 'unknown error'}"
-        )
 
     payload = {
         "status": "ok" if not problems else "not_ready",

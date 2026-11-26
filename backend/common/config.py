@@ -40,6 +40,11 @@ DEFAULT_INSERT_BATCH_SIZE = 1000
 DEFAULT_EMBED_BATCH_SIZE = 64
 DEFAULT_MIN_DESCRIPTION_CHARS = 50
 
+# Everything a resumed run needs that is not the final output lives here:
+# harvest cursor, in-flight index state, and the single-writer lock. The
+# directory is disposable by definition, so deleting it only costs rework.
+DEFAULT_TEMP_DIR = "data/temp"
+
 # How often the long stages report progress. Both are deliberately configurable:
 # a 48k-record harvest is minutes of silence at the defaults, and a quiet log is
 # indistinguishable from a hung process.
@@ -109,6 +114,7 @@ class Settings:
     embed_chunk_size: int = DEFAULT_EMBED_CHUNK_SIZE
     progress_every: int = DEFAULT_PROGRESS_EVERY
     min_description_chars: int = DEFAULT_MIN_DESCRIPTION_CHARS
+    temp_dir: str = DEFAULT_TEMP_DIR
 
     def validate(self) -> "Settings":
         """Fail fast on combinations the service cannot honour.
@@ -162,6 +168,8 @@ class Settings:
             problems.append("INGEST_TARGET must be >= 1.")
         if self.min_description_chars < 0:
             problems.append("MIN_DESCRIPTION_CHARS cannot be negative.")
+        if not self.temp_dir.strip():
+            problems.append("TEMP_DIR cannot be empty.")
 
         if problems:
             raise ValueError("Invalid configuration:\n- " + "\n- ".join(problems))
@@ -211,6 +219,7 @@ class Settings:
             min_description_chars=_number(
                 source, "MIN_DESCRIPTION_CHARS", DEFAULT_MIN_DESCRIPTION_CHARS, int
             ),
+            temp_dir=_text(source, "TEMP_DIR", DEFAULT_TEMP_DIR),
         ).validate()
 
 

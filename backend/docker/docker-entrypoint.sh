@@ -4,7 +4,7 @@
 #
 # Two paths matter, and both are checked:
 #   - the ChromaDB directory (CHROMA_DB_PATH) - Chroma writes its SQLite file here
-#   - its parent (/app/data) - `ingest.py` writes last_ingest.json / documents.json
+#   - its parent (/app/data) - `ingest.py` writes history.json / documents.json
 #     next to it, and `/ready` reads them.
 #
 # Checking only the DB directory was not enough: on a fresh checkout `./data`
