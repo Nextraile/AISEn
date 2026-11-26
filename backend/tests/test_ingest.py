@@ -457,6 +457,9 @@ class FakeClient:
         self.created_metadata = metadata
         return self.collection
 
+    def get_collection(self, name):
+        return self.collection
+
 
 def _write_json(tmp_path, n=3):
     data = [
@@ -484,10 +487,11 @@ def test_build_index_cosine_batches_and_metadata(tmp_path):
 
     assert total == 3
     assert client.deleted == ingest.SETTINGS.collection_name
-    assert client.created_metadata == {
-        "hnsw:space": "cosine",
-        "embedding_model": ingest.SETTINGS.model_name,
-    }
+    assert client.created_metadata["hnsw:space"] == "cosine"
+    assert client.created_metadata["embedding_model"] == ingest.SETTINGS.model_name
+    assert client.created_metadata["corpus_hash"] == ingest._corpus_fingerprint(
+        ["Judul 0. abstrak", "Judul 1. abstrak", "Judul 2. abstrak"]
+    )
     assert [len(b["ids"]) for b in client.collection.batches] == [2, 1]
     assert client.collection.batches[0]["metadatas"][0]["creators"] == "A, B"
     assert client.collection.batches[0]["documents"][0] == "Judul 0. abstrak"
@@ -1026,3 +1030,203 @@ def test_query_demo_matches_api_ranking():
         )
         == expected
     )
+
+
+class StampCollection(CountingCollection):
+    """A collection read back by a later run: it carries its own metadata."""
+
+    def __init__(self, metadata=None):
+        super().__init__()
+        self.metadata = dict(metadata or {})
+
+
+class ReopenClient(CountingClient):
+    """A second run over the collection a finished build left behind.
+
+    The collection keeps its rows and its metadata, so the only thing the run
+    sees is what production would: no resume state, plus `corpus_hash` in the
+    collection itself.
+    """
+
+    def get_or_create_collection(self, name, metadata):
+        self.created_metadata = metadata
+        return self.collection
+
+
+def _completed(tmp_path, n=3, mutate=None):
+    """A finished build: its JSON, its collection, and a client reopened on it."""
+    json_path = _write_json(tmp_path, n=n)
+    first = CountingClient()
+    ingest.build_index(
+        json_path=json_path,
+        model=FakeModel(),
+        client=first,
+        batch_size=2,
+        temp_dir=tmp_path / "temp",
+    )
+    collection = StampCollection(first.created_metadata)
+    collection.batches = [dict(batch) for batch in first.collection.batches]
+    if mutate is not None:
+        mutate(collection)
+    return json_path, collection, ReopenClient(collection=collection)
+
+
+def test_unchanged_corpus_does_not_encode_or_insert(tmp_path):
+    json_path, collection, client = _completed(tmp_path, n=3)
+    model = CountingModel()
+    original_batches = list(collection.batches)
+
+    total = ingest.build_index(json_path=json_path, model=model, client=client)
+
+    assert total == 3
+    assert model.calls == []
+    assert collection.batches == original_batches
+    assert client.deleted is None
+
+
+def test_up_to_date_logs_one_line(tmp_path, caplog):
+    json_path, _, client = _completed(tmp_path, n=3)
+
+    with caplog.at_level("INFO"):
+        ingest.build_index(
+            json_path=json_path, model=CountingModel(), client=client
+        )
+
+    assert "index up to date" in caplog.text
+
+
+def test_different_hash_rebuilds_the_collection(tmp_path):
+    json_path, collection, client = _completed(tmp_path, n=3)
+    before = len(collection.batches)
+    # Different embedded text: the vectors are no longer the answer.
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    data[1]["description"] = "abstrak baru"
+    json_path.write_text(json.dumps(data), encoding="utf-8")
+
+    model = CountingModel()
+    ingest.build_index(json_path=json_path, model=model, client=client)
+
+    assert client.deleted == ingest.SETTINGS.collection_name
+    assert model.calls  # embedded again
+    assert [len(b["ids"]) for b in collection.batches[before:]] == [3]
+
+
+def test_matching_hash_with_wrong_count_rebuilds(tmp_path):
+    # The metadata says this corpus, but rows are missing: not the fast path.
+    json_path, collection, client = _completed(tmp_path, n=4)
+    collection.batches = collection.batches[:-1]  # one batch short
+    before = len(collection.batches)
+    assert collection.count() == 2
+
+    model = CountingModel()
+    ingest.build_index(json_path=json_path, model=model, client=client)
+
+    assert client.deleted == ingest.SETTINGS.collection_name
+    assert model.calls
+    assert collection.batches[before:]
+
+
+def test_missing_corpus_hash_falls_through(tmp_path):
+    # Legacy collections predate `corpus_hash`; they rebuild, not crash.
+    def drop_hash(collection):
+        collection.metadata.pop("corpus_hash")
+
+    json_path, _, client = _completed(tmp_path, n=3, mutate=drop_hash)
+    ingest.build_index(json_path=json_path, model=FakeModel(), client=client)
+
+    assert client.deleted == ingest.SETTINGS.collection_name
+
+
+def test_collection_without_metadata_falls_through(tmp_path):
+    # A collection created without any metadata has `.metadata is None`; reading
+    # it as a dict must not raise, and must not be mistaken for a match.
+    json_path, collection, client = _completed(tmp_path, n=3)
+    collection.metadata = None
+    model = CountingModel()
+
+    total = ingest.build_index(
+        json_path=json_path, model=model, client=client, temp_dir=tmp_path / "temp"
+    )
+
+    # The fake collection appends instead of replacing, so its row count grows;
+    # what matters is that `None` metadata did not raise and was not a match.
+    assert total > 0
+    assert client.deleted == ingest.SETTINGS.collection_name
+    assert model.calls  # rebuilt instead of taken as up to date
+
+
+def test_up_to_date_clears_leftover_resume_state(tmp_path):
+    # A crash while writing the marker can leave resume state behind even though
+    # the collection already matches: the fast path must not keep it.
+    json_path, _, client = _completed(tmp_path, n=3)
+    temp = tmp_path / "temp"
+    temp.mkdir(exist_ok=True)
+    (temp / "index_state.json").write_text("{}", encoding="utf-8")
+    (temp / "index_vectors.npy").write_bytes(b"")
+
+    total = ingest.build_index(
+        json_path=json_path, model=FakeModel(), client=client, temp_dir=temp
+    )
+
+    assert total == 3
+    assert not (temp / "index_state.json").exists()
+    assert not (temp / "index_vectors.npy").exists()
+
+
+def test_fingerprint_ignores_metadata_that_is_not_embedded(tmp_path):
+    # The whole point of hashing text rather than file bytes: `creators`,
+    # `date` and `url` do not reach the model, so they must not invalidate it.
+    base = [
+        {
+            "title": "Judul",
+            "creators": ["A"],
+            "description": "abstrak",
+            "url": "http://x/1.pdf",
+            "date": "2024",
+        }
+    ]
+    other = [dict(base[0], creators=["B", "C"], date="1999", url="http://y/2.pdf")]
+
+    def texts(records):
+        return [f"{r['title']}. {r['description']}" for r in records]
+
+    assert ingest._corpus_fingerprint(texts(base)) == ingest._corpus_fingerprint(
+        texts(other)
+    )
+
+
+def test_fingerprint_tracks_order_and_separators():
+    # Two strings that would concatenate to the same bytes must not collide.
+    assert ingest._corpus_fingerprint(["ab", "c"]) != ingest._corpus_fingerprint(
+        ["a", "bc"]
+    )
+    assert ingest._corpus_fingerprint(["a", "b"]) != ingest._corpus_fingerprint(
+        ["b", "a"]
+    )
+
+
+def test_harvest_fresh_logs_the_discarded_journal(tmp_path, caplog):
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    (temp / "harvest.jsonl").write_text(
+        json.dumps({"title": "x", "_identifier": "oai:1"}) + "\n"
+        + json.dumps({"title": "y", "_identifier": "oai:2"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("INFO"):
+        harvest_into(tmp_path, target=10, records=[], fresh=True)
+
+    discarded = [
+        record for record in caplog.records
+        if record.getMessage() == "harvest journal discarded"
+    ]
+    assert discarded
+    assert discarded[0].extra_data == {"records": 2}
+
+
+def test_harvest_fresh_without_a_journal_is_silent(tmp_path, caplog):
+    with caplog.at_level("INFO"):
+        harvest_into(tmp_path, target=10, records=[], fresh=True)
+
+    assert "harvest journal discarded" not in caplog.text
