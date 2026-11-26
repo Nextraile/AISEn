@@ -91,6 +91,8 @@ services:
         # The serving image omits ingestion/; service/watch.py is stdlib-only, so
         # this reuses the same image rather than adding a dependency.
         INGEST: "0"
+    image: aisen-watch:latest
+    container_name: aisen-watch
     env_file: ../.env
     environment:
       WATCH_URL: http://aisen-api:8000/ready
