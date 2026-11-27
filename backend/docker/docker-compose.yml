@@ -70,6 +70,10 @@ services:
       args:
         APP_UID: ${APP_UID:-10001}
         INGEST: "1"
+        # Torch build for this image only. `cpu` unless the operator asks for a
+        # CUDA wheel; adding docker/docker-compose.gpu.yml also lets the
+        # container see the card (see that file).
+        CUDA_TAG: ${CUDA_TAG:-cpu}
     env_file: ../.env
     volumes:
       # The whole backend directory, so harvest output and the DB land on the

@@ -11,6 +11,14 @@ ARG APP_UID=10001
 # Default 0 keeps the serving image minimal
 ARG INGEST=0
 
+# Which torch wheel index to install from: `cpu` (default, ~200 MB) or a CUDA
+# tag such as `cu126` (~2.5 GB) for GPU ingestion. cu126 is CUDA 12.6, the only
+# CUDA 12 index that reaches far enough back for older cards like the GTX 1050
+# (measured there: 154 docs/s vs 23.4 on the CPU). There is deliberately no
+# driver detection: an incompatible tag shows up as a failed load, not as an
+# encode that quietly ran on the CPU.
+ARG CUDA_TAG=cpu
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/model-cache
@@ -18,7 +26,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/${CUDA_TAG} \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY common/ ./common/
