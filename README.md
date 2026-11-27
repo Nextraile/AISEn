@@ -55,8 +55,6 @@ cp .env.example .env     # needed: the fallback is dev-only
 docker compose up -d --build --wait
 ```
 
-### Step 1 on a GPU (optional, ~6× faster)
-
 The image ships CPU-only torch by default, so by default the index is built on
 the CPU. To use a card, set one value in `backend/.env`:
 
