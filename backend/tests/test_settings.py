@@ -22,6 +22,9 @@ def test_defaults_match_previous_constants():
     assert (s.insert_batch_size, s.embed_batch_size) == (1000, 64)
     assert s.min_description_chars == 50
     assert s.embed_device == "auto"
+    # Empty on purpose: a host run inherits the machine's zone. Docker supplies
+    # Asia/Jakarta in the Compose files.
+    assert s.timezone == ""
 
 
 def test_overrides_are_read_with_the_right_type():
@@ -89,6 +92,8 @@ def test_invalid_number_names_the_variable(env):
         {"INSERT_BATCH_SIZE": "6000"},  # above the ChromaDB limit
         {"EMBED_BATCH_SIZE": "0"},
         {"EMBED_DEVICE": "gpu"},  # not auto/cpu/cuda
+        {"TZ": "Asia/Jakrta"},  # typo: would silently log in UTC
+        {"TZ": "WIB"},  # an abbreviation is not an IANA zone
     ],
 )
 def test_invalid_combination_rejected(env):
@@ -99,3 +104,23 @@ def test_invalid_combination_rejected(env):
 def test_validate_returns_self_when_valid():
     # Returns `self` so `from_env()` can build and validate in one expression.
     assert Settings().validate() == Settings()
+
+
+# ---------- timezone ----------
+def test_timezone_accepts_an_iana_zone():
+    assert Settings.from_env({"TZ": "Asia/Jakarta"}).timezone == "Asia/Jakarta"
+
+
+def test_timezone_defaults_to_leaving_the_machine_alone():
+    # A host run must not start overriding a zone the operator already set, so
+    # the default is empty rather than a hardcoded zone.
+    assert Settings.from_env({}).timezone == ""
+    assert Settings.from_env({"TZ": ""}).timezone == ""
+
+
+def test_unknown_timezone_names_the_variable_and_the_value():
+    with pytest.raises(ValueError) as excinfo:
+        Settings.from_env({"TZ": "Asia/Jakrta"})
+    message = str(excinfo.value)
+    assert "TZ" in message
+    assert "Asia/Jakrta" in message
