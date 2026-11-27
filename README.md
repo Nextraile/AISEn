@@ -31,6 +31,7 @@ directory — paths such as `CHROMA_DB_PATH` (default `./data/vector_db`) and
 | Python | 3.11+ | backend, without Docker |
 | Node.js | 22+ (20+ also works) | frontend, without Docker |
 | Gemini API key | — | optional; without it the API returns results without a summary |
+| NVIDIA GPU + driver | any CUDA 12-capable card | optional; only makes **ingestion** ~6× faster, everything else runs on the CPU |
 
 ## Quick start (Docker)
 
@@ -53,6 +54,34 @@ cd ..\frontend
 cp .env.example .env     # needed: the fallback is dev-only
 docker compose up -d --build --wait
 ```
+
+### Step 1 on a GPU (optional, ~6× faster)
+
+The image ships CPU-only torch by default, so by default the index is built on
+the CPU. If the machine has an NVIDIA card, add the GPU overlay to step 1 — it
+builds a CUDA 12.6 torch image, gives the container the card, and refuses to run
+on the CPU:
+
+```powershell
+$env:CUDA_TAG='cu126'   # the only tag that reaches back to older cards; the overlay defaults to it
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --env-file .env --profile tools run --rm tools --all
+```
+
+Measured on a GTX 1050 with `torch 2.14.1+cu126`, on real documents:
+
+| device | 2,000 documents | docs/s | full 47,993 |
+| --- | --- | --- | --- |
+| CPU | 85.6 s | 23.4 | ~40 min |
+| GTX 1050 | 13.0 s | 154 | ~5 min |
+
+Two things worth knowing before you reach for it. The CUDA image is ~2.5 GB of
+extra wheels, so it only pays off when you ingest more than the 1,000-record
+default (`--target`, or `INGEST_TARGET` in `.env`) or re-index repeatedly. And
+on this card `torch.cuda.get_arch_list()` reports no `sm_61` even though the
+encode works — the `sm_60` kernels cover Pascal — so trust the run, not that
+list. Ranking is identical either way: the same query returns the same titles
+with the same scores to four decimals. Full detail is in
+[`backend/README.md`](backend/README.md#gpu).
 
 `APP_UID` lets the container write the bind-mounted `./data`. On Linux/WSL
 prefix the command instead: `APP_UID=$(id -u) docker compose -f
@@ -85,6 +114,16 @@ pip install -r requirements.txt
 cp .env.example .env                     # fill GEMINI_API_KEY and GEMINI_MODEL
 python -m ingestion.ingest --all                   # only when data/vector_db/ is missing
 uvicorn service.app:app --reload --port 8000 --env-file .env
+```
+
+To ingest on a GPU here, install a CUDA torch wheel first — `requirements.txt`
+pulls the CPU build, and `EMBED_DEVICE` (default `auto`) then picks the card up
+on its own; set it to `cuda` to make a CPU fallback an error instead of a slow
+build:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # match your driver
+EMBED_DEVICE=auto python -m ingestion.ingest --all
 ```
 
 ```bash
