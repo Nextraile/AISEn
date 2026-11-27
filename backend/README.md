@@ -165,7 +165,8 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `GEMINI_API_KEY` | — | Google Gemini API key. Without it summaries are disabled |
 | `GEMINI_MODEL` | — | Model name, e.g. `gemini-2.5-flash`. A wrong name does not break startup — `/search` returns `list_only` pointing at this variable |
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Must match the model the collection was built with. A mismatch is logged at startup |
-| `EMBED_DEVICE` | `auto` | `auto`, `cpu` or `cuda`. `auto` uses CUDA when torch can see a GPU; `cuda` fails at load time on a CPU-only build instead of falling back |
+| `EMBED_DEVICE` | `auto` | `auto`, `cpu` or `cuda`. `auto` uses CUDA when torch can see a GPU; `cuda` fails at load time on a CPU-only build instead of falling back. Host runs only — the Compose files pin it for Docker |
+| `CUDA_TAG` | `cpu` | Torch wheel for the `tools` image: `cpu` or `cu126` for GPU ingestion. Read by Docker Compose, ignored by host runs. Changing it needs `build tools` |
 | `CHROMA_DB_PATH` | `./data/vector_db` | ChromaDB directory, relative to `backend/` |
 | `CHROMA_COLLECTION` | `undip_research_search` | Collection name |
 | `SEARCH_N_RESULTS` | `100` | Candidates fetched per query; also the maximum result count |
@@ -223,9 +224,9 @@ EMBED_DEVICE=auto python -m ingestion.ingest --index
 ```
 
 or the same `tools` image built with a CUDA wheel and given the card. `CUDA_TAG`
-is the only build argument; it defaults to `cpu`, and `cu126` is the CUDA 12.6
-index — the only CUDA 12 index that reaches far enough back for a Pascal card
-like the GTX 1050. Measured on a GTX 1050 with `torch 2.14.1+cu126`:
+in `.env` is the only build argument; it defaults to `cpu`, and `cu126` is the
+CUDA 12.6 index — the only CUDA 12 index that reaches far enough back for a
+Pascal card like the GTX 1050. Measured on a GTX 1050 with `torch 2.14.1+cu126`:
 
 | device | 2,000 documents | docs/s | full 47,993 build |
 | --- | --- | --- | --- |
@@ -240,16 +241,29 @@ matmul probe plus a real encode both ran on the card. Run the encode, not the
 list.
 
 ```bash
-CUDA_TAG=cu126 APP_UID=$(id -u) docker compose \
-  -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml \
-  --env-file .env --profile tools run --rm tools --index
+# CUDA_TAG=cu126 in backend/.env first, then build once:
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.gpu.yml --env-file .env --profile tools build tools
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.gpu.yml --env-file .env --profile tools run --rm tools --index
 ```
+
+`run` reuses the image it already has, so a `CUDA_TAG` change without `build`
+encodes on the CPU with the old image — the log line `embedding device |
+device=cpu` is the tell.
 
 `docker/docker-compose.gpu.yml` is separate because `gpus: all` makes Docker
 refuse to create the container where the NVIDIA runtime is absent, and `tools`
 is also how the tests run on a CPU-only host. The overlay sets
 `EMBED_DEVICE=cuda`, so an image that cannot see the card fails at load time
 instead of encoding for an hour on the CPU.
+
+The Compose files own `EMBED_DEVICE` for Docker runs: `tools` pins `cpu`, the
+overlay pins `cuda`, and `api`/`watch` pin `cpu` in their build args. `.env`'s
+`EMBED_DEVICE` is therefore for host runs only — it is also exported into the
+containers' environment by `env_file`, which is why the build args pin
+`CUDA_TAG` instead of inheriting it. One consequence: a `cu126` `tools` image
+built without the overlay encodes on the CPU, because `tools` still says `cpu`.
 
 ## API at a glance
 

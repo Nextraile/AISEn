@@ -58,14 +58,24 @@ docker compose up -d --build --wait
 ### Step 1 on a GPU (optional, ~6× faster)
 
 The image ships CPU-only torch by default, so by default the index is built on
-the CPU. If the machine has an NVIDIA card, add the GPU overlay to step 1 — it
-builds a CUDA 12.6 torch image, gives the container the card, and refuses to run
-on the CPU:
+the CPU. To use a card, set one value in `backend/.env`:
+
+```bash
+CUDA_TAG=cu126    # the only tag that reaches back to older cards
+```
+
+then build the tools image once and run step 1 with the GPU overlay — it gives
+the container the card and makes a CPU fallback an error rather than a slow run:
 
 ```powershell
-$env:CUDA_TAG='cu126'   # the only tag that reaches back to older cards; the overlay defaults to it
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --env-file .env --profile tools build tools
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --env-file .env --profile tools run --rm tools --all
 ```
+
+The `build` matters: `run` reuses whatever image is already there, so changing
+`CUDA_TAG` and running straight away keeps the old image — and only the
+`embedding device | device=cpu` log line would say so. Check that line; it is
+the one honest answer for how a build actually went.
 
 Measured on a GTX 1050 with `torch 2.14.1+cu126`, on real documents:
 
@@ -82,6 +92,12 @@ encode works — the `sm_60` kernels cover Pascal — so trust the run, not that
 list. Ranking is identical either way: the same query returns the same titles
 with the same scores to four decimals. Full detail is in
 [`backend/README.md`](backend/README.md#gpu).
+
+`EMBED_DEVICE` in `.env` does **not** steer Docker ingestion — the Compose files
+own that (`cpu` for `tools`, `cuda` under the overlay), so one `.env` cannot
+pick the wrong device. It applies to host runs and, pinned, to the `api`
+service. Two knobs, two jobs: `CUDA_TAG` is the torch wheel at build time,
+`EMBED_DEVICE` is the device at run time.
 
 `APP_UID` lets the container write the bind-mounted `./data`. On Linux/WSL
 prefix the command instead: `APP_UID=$(id -u) docker compose -f
