@@ -66,6 +66,8 @@ def resolve_device(requested: str = "auto", torch_module: Any | None = None) -> 
         "EMBED_DEVICE=cuda but this torch build cannot use a GPU "
         f"(torch {getattr(torch, '__version__', 'unknown')}, "
         f"torch.version.cuda={cuda_version!r}, devices={device_count}). "
-        "The Docker image installs CPU-only torch by default: run ingestion on "
-        "the host with a CUDA torch build, or set EMBED_DEVICE=cpu."
+        "In Docker: set CUDA_TAG=cu126 in .env, add "
+        "-f docker/docker-compose.gpu.yml, and rebuild with `build tools` -- "
+        "`run` alone reuses the CPU image already built. On the host: install a "
+        "CUDA wheel. `EMBED_DEVICE=cpu` runs on the CPU on purpose."
     )
