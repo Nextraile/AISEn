@@ -16,6 +16,7 @@ read per call, so tests can add and remove them.
 from __future__ import annotations
 
 import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -28,6 +29,10 @@ DEFAULT_SUMMARY_TOP_K = 5
 DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOG_FORMAT = "text"
+# Log stamps are local time (`time.localtime`), which inside a container is
+# whatever its TZ says. Empty means "don't touch it": a host run keeps the
+# machine's zone, and Docker supplies a value (see docker-compose.yml).
+DEFAULT_TIMEZONE = ""
 DEFAULT_LOG_FILE = ""
 DEFAULT_THRESHOLD_MIN = 0.1
 DEFAULT_THRESHOLD_MAX = 0.9
@@ -108,6 +113,7 @@ class Settings:
     log_level: str = DEFAULT_LOG_LEVEL
     log_format: str = DEFAULT_LOG_FORMAT
     log_file: str = DEFAULT_LOG_FILE
+    timezone: str = DEFAULT_TIMEZONE
     threshold_min: float = DEFAULT_THRESHOLD_MIN
     threshold_max: float = DEFAULT_THRESHOLD_MAX
     threshold_default: float = DEFAULT_THRESHOLD_DEFAULT
@@ -182,6 +188,16 @@ class Settings:
             problems.append("MIN_DESCRIPTION_CHARS cannot be negative.")
         if not self.temp_dir.strip():
             problems.append("TEMP_DIR cannot be empty.")
+        # Empty is allowed and means "use the machine's zone". A non-empty value
+        # has to name a zone: a typo would otherwise silently log in UTC, which
+        # is exactly the confusion this setting exists to remove.
+        if self.timezone:
+            try:
+                ZoneInfo(self.timezone)
+            except (ZoneInfoNotFoundError, ValueError):
+                problems.append(
+                    f"TZ must be an IANA zone name like Asia/Jakarta, got {self.timezone!r}."
+                )
 
         if problems:
             raise ValueError("Invalid configuration:\n- " + "\n- ".join(problems))
@@ -204,6 +220,7 @@ class Settings:
             log_level=_text(source, "LOG_LEVEL", DEFAULT_LOG_LEVEL).upper(),
             log_format=_text(source, "LOG_FORMAT", DEFAULT_LOG_FORMAT).lower(),
             log_file=_text(source, "LOG_FILE", DEFAULT_LOG_FILE),
+            timezone=_text(source, "TZ", DEFAULT_TIMEZONE),
             threshold_min=_number(source, "THRESHOLD_MIN", DEFAULT_THRESHOLD_MIN, float),
             threshold_max=_number(source, "THRESHOLD_MAX", DEFAULT_THRESHOLD_MAX, float),
             threshold_default=_number(

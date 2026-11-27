@@ -30,6 +30,10 @@ services:
       # an `EMBED_DEVICE=cuda` set for host-side ingestion would stop the
       # container at startup instead of letting it serve.
       EMBED_DEVICE: cpu
+      # Log stamps are local time, and inside the container "local" is this.
+      # Compose-level so it holds even without a .env, and the same default for
+      # every service so the api line and the ingest line agree.
+      TZ: ${TZ:-Asia/Jakarta}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -87,6 +91,9 @@ services:
       # GPU overlay raises this to `cuda`. A CUDA image built without the
       # overlay therefore logs `device=cpu` - read that line, not the image.
       EMBED_DEVICE: cpu
+      # Same zone as the api and watch, so an ingest line and a request line
+      # can be compared without arithmetic. Log stamps are local time.
+      TZ: ${TZ:-Asia/Jakarta}
     volumes:
       # The whole backend directory, so harvest output and the DB land on the
       # host. `--query` therefore needs no extra mount.
@@ -120,6 +127,9 @@ services:
     env_file: ../.env
     environment:
       WATCH_URL: http://aisen-api:8000/ready
+      # `watch.py` stamps with `datetime.now()`, and `common.log` uses
+      # `time.localtime`; both read this, so its lines match the api's.
+      TZ: ${TZ:-Asia/Jakarta}
     # `python -m service.watch` instead of uvicorn; interval/timeout come from .env
     entrypoint: ["python", "-m", "service.watch"]
     depends_on:

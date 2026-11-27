@@ -17,6 +17,10 @@ services:
     container_name: aisen-web
     environment:
       API_UPSTREAM: ${API_UPSTREAM:-http://aisen-api:8000}
+      # nginx writes its own log lines (`$time_local`) and reads this at
+      # startup. The alpine image already carries /usr/share/zoneinfo, so no
+      # tzdata install is needed.
+      TZ: ${TZ:-Asia/Jakarta}
     ports:
       - "${WEB_PORT:-3000}:8080"
     restart: unless-stopped

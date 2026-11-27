@@ -178,6 +178,7 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `LOG_FORMAT` | `text` | `text` for `[time] [logger] [LEVEL] message key=value`; `json` for one JSON object per line when a collector reads it |
 | `LOG_FILE` | — | Also append logs to this file, e.g. `logs/aisen.log` |
+| `TZ` | — (Compose: `Asia/Jakarta`) | Log stamps are local time. Containers default to WIB via Compose; empty means "leave the machine's zone alone", which is what a host run wants. An unknown name fails startup instead of quietly logging in UTC |
 | `OAI_ENDPOINT` | `https://eprints2.undip.ac.id/cgi/oai2` | Harvest source |
 | `INGEST_TARGET` | `1000` | Valid records to harvest |
 | `INGEST_JSON_PATH` | `data/documents.json` | Harvest output |
@@ -348,7 +349,11 @@ hang:
   ```
 
   The first cell is `DD-MM-YYYY|HH:MM:SS.mmm` in local time, so a log kept from
-  yesterday still says when a line was written. The date and the clock are joined
+  yesterday still says when a line was written. "Local" is `TZ`: containers are
+  given `Asia/Jakarta` by Compose, so their lines read WIB and match the wall
+  clock; a host run leaves the machine's zone alone unless `TZ` is set, and an
+  unknown value is rejected at startup rather than silently falling back to UTC.
+  `nginx` access logs read the same value. The date and the clock are joined
   by a bare `|` with no spaces; the data divider is ` | ` with spaces, so the two
   cannot be confused. Three tight cells (`[INFO]`, never `[ INFO ]`), one space
   between them, `: `
@@ -491,6 +496,7 @@ HEALTH_START_PERIOD=120s
 - `SUMMARY_TOP_K <= SEARCH_N_RESULTS`
 - `INSERT_BATCH_SIZE <= 5461` (ChromaDB's batch cap)
 - `EMBED_DEVICE` is one of `auto`, `cpu`, `cuda`
+- `TZ`, when set, is an IANA zone name (`Asia/Jakarta`); empty is allowed
 
 `THRESHOLD_DEFAULT` is **not** a sizing knob. It is measured on the full corpus
 (relevant 0.74–0.84, noise ≤ 0.559); lowering it on a small machine to "get more
