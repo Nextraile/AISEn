@@ -102,6 +102,13 @@ prefix the command instead: `APP_UID=$(id -u) docker compose -f
 docker/docker-compose.yml up -d --build --wait`. If it does not match, `docker-entrypoint.sh` stops the container and
 prints the owner UID and the container UID, rather than a SQLite traceback.
 
+Log lines are stamped in local time, and the containers default to `TZ=Asia/Jakarta`
+(WIB) so those stamps match your wall clock instead of sitting 7 hours behind in
+UTC. Set `TZ` in `backend/.env` to change it; an unknown name fails startup
+rather than quietly logging in UTC. Recorded timestamps in
+`data/history.json` stay UTC, because `/ready` and any comparison read them as
+machine values rather than display.
+
 `backend/data/` is committed as an empty directory (via `data/.gitkeep`) for a
 reason: Docker creates a missing bind-mount source as **root**, which a
 container running as `APP_UID` then cannot write. Keeping the directory in git

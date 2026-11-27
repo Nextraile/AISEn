@@ -51,6 +51,7 @@ CUDA_TAG=cu126 in .env, then `build tools`, then this run with -f docker/docker-
 ## Observability
 
 - Both entry points call `common.log.configure_logging`, so `LOG_LEVEL` (previously ignored by `ingestion/ingest.py`), `LOG_FORMAT=text|json`, and `LOG_FILE` apply everywhere.
+- Log stamps are local time (`time.localtime`, and `watch.py` uses `datetime.now()`); "local" in a container is `TZ`, which Compose sets to `Asia/Jakarta` for `api`, `watch`, `tools` and `web`. Both images already ship `/usr/share/zoneinfo`, so no `tzdata` install is needed. On the host, empty `TZ` leaves the machine's zone alone; `Settings.validate()` rejects a non-empty value that is not an IANA zone, because the alternative is logging in UTC with nothing saying so. `history.json` stays UTC (`+00:00`) on purpose: it is a machine record, not a display.
 - Every request gets an `X-Request-ID` (accepted or generated), echoed in the response and included in the middleware line, the `search` line, and the JSON body of an unexpected 500. The frontend sends its own id on every request.
 - Ingest cadence is configurable: `PROGRESS_EVERY` for harvest lines, `EMBED_CHUNK_SIZE` for encode lines (`--progress-every` / `--embed-chunk-size` override per run). Encode reports `done=/pct=/rate=/eta=`.
 - `ingest_lock()` is a hard single-writer guard via `flock` on `data/temp/.ingest.lock`; a second run exits with code 2 and name of the holder. Never bypass it by deleting the lock while a run is live.
