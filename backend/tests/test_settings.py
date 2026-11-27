@@ -21,6 +21,7 @@ def test_defaults_match_previous_constants():
     assert s.ingest_json_path == "data/documents.json"
     assert (s.insert_batch_size, s.embed_batch_size) == (1000, 64)
     assert s.min_description_chars == 50
+    assert s.embed_device == "auto"
 
 
 def test_overrides_are_read_with_the_right_type():
@@ -32,9 +33,11 @@ def test_overrides_are_read_with_the_right_type():
             "LLM_TIMEOUT_SECONDS": "2.5",
             "LOG_LEVEL": "warning",
             "THRESHOLD_DEFAULT": "0.6",
+            "EMBED_DEVICE": " CUDA ",
         }
     )
     assert s.model_name == "model/lain"  # whitespace stripped
+    assert s.embed_device == "cuda"  # normalised to lower case
     assert s.db_path == "/tmp/db"
     assert s.n_results == 20
     assert s.llm_timeout_seconds == 2.5
@@ -85,6 +88,7 @@ def test_invalid_number_names_the_variable(env):
         {"LOG_LEVEL": "VERBOSE"},
         {"INSERT_BATCH_SIZE": "6000"},  # above the ChromaDB limit
         {"EMBED_BATCH_SIZE": "0"},
+        {"EMBED_DEVICE": "gpu"},  # not auto/cpu/cuda
     ],
 )
 def test_invalid_combination_rejected(env):

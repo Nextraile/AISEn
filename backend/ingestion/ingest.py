@@ -38,6 +38,7 @@ import numpy as np
 from service.app import rank_results
 from common.log import configure_logging
 from common.config import SETTINGS
+from common.device import resolve_device
 
 log = logging.getLogger("aisen.ingest")
 
@@ -113,7 +114,7 @@ def _write_run_summary(
     stage: str,
     started_at: str,
     duration_s: float,
-    counts: dict[str, int],
+    counts: dict[str, object],
     error: str | None = None,
     resume_from: dict | None = None,
 ) -> None:
@@ -143,6 +144,9 @@ def _write_run_summary(
         "documents_indexed": counts.get("documents"),
         "target": SETTINGS.ingest_target,
         "model": SETTINGS.model_name,
+        # Which device actually encoded this run. `None` when the build was a
+        # no-op: no model was loaded, so there is no device to name.
+        "device": counts.get("device"),
         "collection": SETTINGS.collection_name,
         "error": error,
         # None on a run that started from scratch; otherwise what this run
@@ -767,6 +771,7 @@ def build_index(
     embed_chunk_size: int | None = None,
     fresh: bool = False,
     temp_dir: str | Path | None = None,
+    stats: dict | None = None,
 ) -> int:
     """(Re)build the Chroma collection from the harvested JSON.
 
@@ -792,7 +797,9 @@ def build_index(
     the model at all: re-harvesting unchanged data no longer re-embeds 48k
     abstracts.
 
-    `model` and `client` are injectable for tests.
+    `model` and `client` are injectable for tests. `stats`, when given, receives
+    `device`, the concrete device the model was loaded on, so the run summary
+    can record whether an encode took three minutes or forty.
     """
     source = Path(json_path)
     data = json.loads(source.read_text(encoding="utf-8"))
@@ -903,7 +910,17 @@ def build_index(
     if model is None:
         from sentence_transformers import SentenceTransformer
 
-        model = SentenceTransformer(model_name)
+        device = resolve_device(SETTINGS.embed_device)
+        if stats is not None:
+            stats["device"] = device
+        log.info(
+            "embedding device",
+            extra={"extra_data": {
+                "requested": SETTINGS.embed_device,
+                "device": device,
+            }},
+        )
+        model = SentenceTransformer(model_name, device=device)
 
     # Phase 1: produce the vectors that are still missing.
     #
@@ -997,7 +1014,15 @@ def query_demo(
     if model is None:
         from sentence_transformers import SentenceTransformer
 
-        model = SentenceTransformer(SETTINGS.model_name)
+        device = resolve_device(SETTINGS.embed_device)
+        log.info(
+            "embedding device",
+            extra={"extra_data": {
+                "requested": SETTINGS.embed_device,
+                "device": device,
+            }},
+        )
+        model = SentenceTransformer(SETTINGS.model_name, device=device)
 
     if collection is None:
         client = chromadb.PersistentClient(path=db_path)
@@ -1084,7 +1109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     started_at = _utc_now()
     started = time.monotonic()
-    counts: dict[str, int] = {}
+    counts: dict[str, object] = {}
     stage = "harvest" if (args.all or args.harvest) else ("index" if args.index else "query")
     # What this run inherited, so a history entry for a 500-record run that
     # started at 200 is explainable instead of looking like a shrunk corpus.
@@ -1131,12 +1156,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "stage start",
                     extra={"extra_data": {"stage": "index", "source": args.json, "db": args.db}},
                 )
+                index_stats: dict[str, object] = {}
                 counts["documents"] = build_index(
                     json_path=args.json,
                     db_path=args.db,
                     embed_chunk_size=args.embed_chunk_size,
                     fresh=args.fresh,
+                    stats=index_stats,
                 )
+                if "device" in index_stats:
+                    counts["device"] = index_stats["device"]
                 log.info(
                     "stage complete",
                     extra={"extra_data": {

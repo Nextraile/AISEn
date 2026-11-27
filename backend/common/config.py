@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_EMBED_DEVICE = "auto"
 DEFAULT_DB_PATH = "./data/vector_db"
 DEFAULT_COLLECTION = "undip_research_search"
 DEFAULT_N_RESULTS = 100
@@ -53,6 +54,11 @@ DEFAULT_EMBED_CHUNK_SIZE = 5000
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 LOG_FORMATS = ("text", "json")
+
+# `auto` means "use CUDA when this torch build can see a GPU". `cuda` is a
+# promise: it fails at load time instead of quietly running on the CPU, because
+# a silent fallback turns a three-minute encode into a forty-minute one.
+EMBED_DEVICES = ("auto", "cpu", "cuda")
 
 # ChromaDB rejects a single insert above roughly 5,461 records.
 CHROMA_MAX_BATCH = 5461
@@ -93,6 +99,7 @@ class Settings:
     """Runtime configuration. Build with `Settings.from_env()`, not directly."""
 
     model_name: str = DEFAULT_EMBEDDING_MODEL
+    embed_device: str = DEFAULT_EMBED_DEVICE
     db_path: str = DEFAULT_DB_PATH
     collection_name: str = DEFAULT_COLLECTION
     n_results: int = DEFAULT_N_RESULTS
@@ -154,6 +161,11 @@ class Settings:
             problems.append(
                 f"LOG_FORMAT must be one of {', '.join(LOG_FORMATS)}."
             )
+        if self.embed_device not in EMBED_DEVICES:
+            problems.append(
+                f"EMBED_DEVICE must be one of {', '.join(EMBED_DEVICES)} "
+                f"(got {self.embed_device!r})."
+            )
         if self.progress_every < 1:
             problems.append("PROGRESS_EVERY must be >= 1.")
         if self.embed_chunk_size < 1:
@@ -181,6 +193,7 @@ class Settings:
         source = os.environ if env is None else env
         return cls(
             model_name=_text(source, "EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+            embed_device=_text(source, "EMBED_DEVICE", DEFAULT_EMBED_DEVICE).lower(),
             db_path=_text(source, "CHROMA_DB_PATH", DEFAULT_DB_PATH),
             collection_name=_text(source, "CHROMA_COLLECTION", DEFAULT_COLLECTION),
             n_results=_number(source, "SEARCH_N_RESULTS", DEFAULT_N_RESULTS, int),

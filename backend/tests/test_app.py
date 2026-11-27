@@ -585,3 +585,31 @@ def test_startup_fails_clearly_when_collection_missing(tmp_path, monkeypatch):
         monkeypatch.delenv("CHROMA_DB_PATH", raising=False)
         importlib.reload(settings)
         importlib.reload(app)
+
+
+# ---------- device selection ----------
+def test_load_model_passes_the_resolved_device(monkeypatch):
+    # The API embeds queries with the same model, so it must honour the same
+    # setting. Loading it without `device=` would silently ignore EMBED_DEVICE.
+    import sys
+    from types import SimpleNamespace
+
+    recorded = {}
+
+    class RecordingTransformer:
+        def __init__(self, name, device=None):
+            recorded["name"] = name
+            recorded["device"] = device
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=RecordingTransformer),
+    )
+    monkeypatch.setattr(app, "resolve_device", lambda requested: "cuda")
+
+    target = SimpleNamespace(state=SimpleNamespace())
+    app._load_model(target)
+
+    assert recorded["device"] == "cuda"
+    assert isinstance(target.state.model, RecordingTransformer)

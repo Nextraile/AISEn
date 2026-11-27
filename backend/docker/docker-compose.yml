@@ -19,6 +19,12 @@ services:
     image: aisen-api:latest
     container_name: aisen-api
     env_file: ../.env
+    environment:
+      # The serving image ships CPU-only torch on purpose: a query embeds one
+      # short string, so a GPU there would only occupy the card. Without this,
+      # an `EMBED_DEVICE=cuda` set for host-side ingestion would stop the
+      # container at startup instead of letting it serve.
+      EMBED_DEVICE: cpu
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
