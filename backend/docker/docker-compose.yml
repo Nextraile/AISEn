@@ -16,9 +16,20 @@ services:
         # PowerShell: $env:APP_UID=1000; docker compose -f docker/docker-compose.yml --env-file .env up
 
         APP_UID: ${APP_UID:-10001}
+        # Pinned, not inherited: `env_file: ../.env` also exports CUDA_TAG into
+        # this container's environment (Compose treats every .env key that way),
+        # so a local `CUDA_TAG=cu126` would otherwise build the serving image
+        # with 2.5 GB of CUDA wheels it can never use.
+        CUDA_TAG: cpu
     image: aisen-api:latest
     container_name: aisen-api
     env_file: ../.env
+    environment:
+      # The serving image ships CPU-only torch on purpose: a query embeds one
+      # short string, so a GPU there would only occupy the card. Without this,
+      # an `EMBED_DEVICE=cuda` set for host-side ingestion would stop the
+      # container at startup instead of letting it serve.
+      EMBED_DEVICE: cpu
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -64,7 +75,18 @@ services:
       args:
         APP_UID: ${APP_UID:-10001}
         INGEST: "1"
+        # Torch wheel for this image, from .env (`cpu` by default). The GPU
+        # overlay does not change this value - set CUDA_TAG=cu126 in .env - and
+        # only adds the card plus EMBED_DEVICE=cuda.
+        CUDA_TAG: ${CUDA_TAG:-cpu}
     env_file: ../.env
+    environment:
+      # Owned here, not by .env: EMBED_DEVICE in .env is for host runs and the
+      # api service. Ingestion decides its own device, so one .env shared with
+      # a host-side `cuda` run cannot put the build on the wrong device. The
+      # GPU overlay raises this to `cuda`. A CUDA image built without the
+      # overlay therefore logs `device=cpu` - read that line, not the image.
+      EMBED_DEVICE: cpu
     volumes:
       # The whole backend directory, so harvest output and the DB land on the
       # host. `--query` therefore needs no extra mount.
@@ -88,6 +110,8 @@ services:
       dockerfile: docker/Dockerfile
       args:
         APP_UID: ${APP_UID:-10001}
+        # Serving image: CPU torch, on purpose. See the note on `api`.
+        CUDA_TAG: cpu
         # The serving image omits ingestion/; service/watch.py is stdlib-only, so
         # this reuses the same image rather than adding a dependency.
         INGEST: "0"

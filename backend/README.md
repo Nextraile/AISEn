@@ -165,6 +165,8 @@ need. `.env.example` is the full inventory with the reasoning for each value.
 | `GEMINI_API_KEY` | — | Google Gemini API key. Without it summaries are disabled |
 | `GEMINI_MODEL` | — | Model name, e.g. `gemini-2.5-flash`. A wrong name does not break startup — `/search` returns `list_only` pointing at this variable |
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Must match the model the collection was built with. A mismatch is logged at startup |
+| `EMBED_DEVICE` | `auto` | `auto`, `cpu` or `cuda`. `auto` uses CUDA when torch can see a GPU; `cuda` fails at load time on a CPU-only build instead of falling back. Host runs only — the Compose files pin it for Docker |
+| `CUDA_TAG` | `cpu` | Torch wheel for the `tools` image: `cpu` or `cu126` for GPU ingestion. Read by Docker Compose, ignored by host runs. Changing it needs `build tools` |
 | `CHROMA_DB_PATH` | `./data/vector_db` | ChromaDB directory, relative to `backend/` |
 | `CHROMA_COLLECTION` | `undip_research_search` | Collection name |
 | `SEARCH_N_RESULTS` | `100` | Candidates fetched per query; also the maximum result count |
@@ -202,6 +204,66 @@ half-configured.
 Variables are read once at import. Locally `.env` is loaded by
 `uvicorn --env-file .env`; Docker Compose loads it via `env_file:`. Editing the
 file requires a restart either way. `.env` is git-ignored; never commit it.
+
+### GPU
+
+`EMBED_DEVICE` decides where the model runs. `auto` (the default) uses CUDA when
+the installed torch can see a GPU and the CPU otherwise; `cpu` forces the CPU;
+`cuda` is a promise — it fails at load time rather than falling back, so a slow
+run is never silently a CPU run. The resolved device is logged
+(`model ready | device=cuda`) and recorded in `history.json`, which is what
+answers "was that build CPU or GPU" once the logs are gone.
+
+The Docker image installs CPU-only torch by default, and the `api` service is
+pinned to `EMBED_DEVICE=cpu` because a query embeds one short string. GPU
+ingestion is either a host-side run:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126  # match your driver
+EMBED_DEVICE=auto python -m ingestion.ingest --index
+```
+
+or the same `tools` image built with a CUDA wheel and given the card. `CUDA_TAG`
+in `.env` is the only build argument; it defaults to `cpu`, and `cu126` is the
+CUDA 12.6 index — the only CUDA 12 index that reaches far enough back for a
+Pascal card like the GTX 1050. Measured on a GTX 1050 with `torch 2.14.1+cu126`:
+
+| device | 2,000 documents | docs/s | full 47,993 build |
+| --- | --- | --- | --- |
+| CPU (this machine) | 85.6 s | 23.4 | ~40 min |
+| GTX 1050 (`cuda`) | 13.0 s | 154 | ~5 min |
+
+6.5×, and the batch size barely matters on the card (`batch=32` and `batch=128`
+both land at ~154 docs/s), so `EMBED_BATCH_SIZE` stays at the CPU-friendly
+default. Don't read `torch.cuda.get_arch_list()` as a gate: this wheel lists
+`sm_50…sm_90` with no `sm_61`, but `sm_60` cubins run on 6.1 hardware, and the
+matmul probe plus a real encode both ran on the card. Run the encode, not the
+list.
+
+```bash
+# CUDA_TAG=cu126 in backend/.env first, then build once:
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.gpu.yml --env-file .env --profile tools build tools
+APP_UID=$(id -u) docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.gpu.yml --env-file .env --profile tools run --rm tools --index
+```
+
+`run` reuses the image it already has, so a `CUDA_TAG` change without `build`
+encodes on the CPU with the old image — the log line `embedding device |
+device=cpu` is the tell.
+
+`docker/docker-compose.gpu.yml` is separate because `gpus: all` makes Docker
+refuse to create the container where the NVIDIA runtime is absent, and `tools`
+is also how the tests run on a CPU-only host. The overlay sets
+`EMBED_DEVICE=cuda`, so an image that cannot see the card fails at load time
+instead of encoding for an hour on the CPU.
+
+The Compose files own `EMBED_DEVICE` for Docker runs: `tools` pins `cpu`, the
+overlay pins `cuda`, and `api`/`watch` pin `cpu` in their build args. `.env`'s
+`EMBED_DEVICE` is therefore for host runs only — it is also exported into the
+containers' environment by `env_file`, which is why the build args pin
+`CUDA_TAG` instead of inheriting it. One consequence: a `cu126` `tools` image
+built without the overlay encodes on the CPU, because `tools` still says `cpu`.
 
 ## API at a glance
 
@@ -428,6 +490,7 @@ HEALTH_START_PERIOD=120s
 - `THRESHOLD_MIN < THRESHOLD_DEFAULT < THRESHOLD_MAX`
 - `SUMMARY_TOP_K <= SEARCH_N_RESULTS`
 - `INSERT_BATCH_SIZE <= 5461` (ChromaDB's batch cap)
+- `EMBED_DEVICE` is one of `auto`, `cpu`, `cuda`
 
 `THRESHOLD_DEFAULT` is **not** a sizing knob. It is measured on the full corpus
 (relevant 0.74–0.84, noise ≤ 0.559); lowering it on a small machine to "get more

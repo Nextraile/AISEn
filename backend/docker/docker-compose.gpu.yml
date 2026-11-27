@@ -1,0 +1,25 @@
+# Overlay that gives the `tools` service the GPU.
+#
+# Set `CUDA_TAG` in `backend/.env` (not on the command line), then build once:
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml \
+#     --env-file .env --profile tools build tools
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml \
+#     --env-file .env --profile tools run --rm tools --all
+#
+# The `build` is not optional after changing CUDA_TAG: `run` reuses whatever
+# image is already there, so switching .env from cpu to cu126 and running
+# straight away would encode on the CPU with the old image and only the
+# `embedding device | device=cpu` line to say so.
+#
+# The main file stays free of `gpus: all` on purpose: Docker refuses to create
+# such a container on a host without the NVIDIA container runtime, and `tools`
+# is also how the tests run on a CPU-only machine.
+
+services:
+  tools:
+    gpus: all
+    environment:
+      # This image has CUDA torch, so demand the card: a wheel that cannot see
+      # it fails at load time instead of encoding for an hour on the CPU.
+      EMBED_DEVICE: cuda

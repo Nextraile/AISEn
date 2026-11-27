@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 
 import pytest
 
@@ -1230,3 +1232,85 @@ def test_harvest_fresh_without_a_journal_is_silent(tmp_path, caplog):
         harvest_into(tmp_path, target=10, records=[], fresh=True)
 
     assert "harvest journal discarded" not in caplog.text
+
+
+# ---------- device selection ----------
+def test_up_to_date_does_not_resolve_a_device(tmp_path, monkeypatch):
+    # The fast path must stay torch-free: resolving the device imports torch,
+    # and a rerun over an unchanged corpus should not pay even that.
+    json_path, _, client = _completed(tmp_path, n=3)
+
+    def explode(*args, **kwargs):
+        raise AssertionError("the up-to-date path must not resolve a device")
+
+    monkeypatch.setattr(ingest, "resolve_device", explode)
+
+    assert ingest.build_index(json_path=json_path, client=client) == 3
+
+
+def test_build_index_loads_the_model_on_the_resolved_device(tmp_path, monkeypatch):
+    json_path = _write_json(tmp_path)
+    recorded = {}
+
+    class RecordingTransformer:
+        def __init__(self, name, device=None):
+            recorded["name"] = name
+            recorded["device"] = device
+
+        def encode(self, documents, batch_size=64, show_progress_bar=False):
+            return FakeEmbeddings([[1.0, 0.0] for _ in documents])
+
+    monkeypatch.setattr(ingest, "resolve_device", lambda *a, **k: "cuda")
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=RecordingTransformer),
+    )
+
+    stats = {}
+    total = ingest.build_index(
+        json_path=json_path,
+        client=CountingClient(),
+        temp_dir=tmp_path / "temp",
+        stats=stats,
+    )
+
+    assert total == 3
+    assert recorded["device"] == "cuda"
+    assert stats["device"] == "cuda"
+
+
+def test_run_summary_records_the_device_it_used(tmp_path, monkeypatch):
+    import dataclasses
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        ingest,
+        "SETTINGS",
+        dataclasses.replace(
+            ingest.SETTINGS, ingest_json_path=str(data_dir / "d.json")
+        ),
+    )
+
+    ingest._write_run_summary(
+        status="ok",
+        stage="index",
+        started_at="2026-01-01T00:00:00+00:00",
+        duration_s=1.0,
+        counts={"documents": 3, "device": "cuda"},
+    )
+    # A no-op run loaded no model, so it has no device to name.
+    ingest._write_run_summary(
+        status="ok",
+        stage="index",
+        started_at="2026-01-02T00:00:00+00:00",
+        duration_s=1.0,
+        counts={"documents": 3},
+    )
+
+    first, second = [
+        json.loads(line)
+        for line in (data_dir / "history.json").read_text(encoding="utf-8").splitlines()
+    ]
+    assert first["device"] == "cuda"
+    assert second["device"] is None

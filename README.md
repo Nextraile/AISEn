@@ -31,6 +31,7 @@ directory — paths such as `CHROMA_DB_PATH` (default `./data/vector_db`) and
 | Python | 3.11+ | backend, without Docker |
 | Node.js | 22+ (20+ also works) | frontend, without Docker |
 | Gemini API key | — | optional; without it the API returns results without a summary |
+| NVIDIA GPU + driver | any CUDA 12-capable card | optional; only makes **ingestion** ~6× faster, everything else runs on the CPU |
 
 ## Quick start (Docker)
 
@@ -53,6 +54,48 @@ cd ..\frontend
 cp .env.example .env     # needed: the fallback is dev-only
 docker compose up -d --build --wait
 ```
+
+The image ships CPU-only torch by default, so by default the index is built on
+the CPU. To use a card, set one value in `backend/.env`:
+
+```bash
+CUDA_TAG=cu126    # the only tag that reaches back to older cards
+```
+
+then build the tools image once and run step 1 with the GPU overlay — it gives
+the container the card and makes a CPU fallback an error rather than a slow run:
+
+```powershell
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --env-file .env --profile tools build tools
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --env-file .env --profile tools run --rm tools --all
+```
+
+The `build` matters: `run` reuses whatever image is already there, so changing
+`CUDA_TAG` and running straight away keeps the old image — and only the
+`embedding device | device=cpu` log line would say so. Check that line; it is
+the one honest answer for how a build actually went.
+
+Measured on a GTX 1050 with `torch 2.14.1+cu126`, on real documents:
+
+| device | 2,000 documents | docs/s | full 47,993 |
+| --- | --- | --- | --- |
+| CPU | 85.6 s | 23.4 | ~40 min |
+| GTX 1050 | 13.0 s | 154 | ~5 min |
+
+Two things worth knowing before you reach for it. The CUDA image is ~2.5 GB of
+extra wheels, so it only pays off when you ingest more than the 1,000-record
+default (`--target`, or `INGEST_TARGET` in `.env`) or re-index repeatedly. And
+on this card `torch.cuda.get_arch_list()` reports no `sm_61` even though the
+encode works — the `sm_60` kernels cover Pascal — so trust the run, not that
+list. Ranking is identical either way: the same query returns the same titles
+with the same scores to four decimals. Full detail is in
+[`backend/README.md`](backend/README.md#gpu).
+
+`EMBED_DEVICE` in `.env` does **not** steer Docker ingestion — the Compose files
+own that (`cpu` for `tools`, `cuda` under the overlay), so one `.env` cannot
+pick the wrong device. It applies to host runs and, pinned, to the `api`
+service. Two knobs, two jobs: `CUDA_TAG` is the torch wheel at build time,
+`EMBED_DEVICE` is the device at run time.
 
 `APP_UID` lets the container write the bind-mounted `./data`. On Linux/WSL
 prefix the command instead: `APP_UID=$(id -u) docker compose -f
@@ -85,6 +128,16 @@ pip install -r requirements.txt
 cp .env.example .env                     # fill GEMINI_API_KEY and GEMINI_MODEL
 python -m ingestion.ingest --all                   # only when data/vector_db/ is missing
 uvicorn service.app:app --reload --port 8000 --env-file .env
+```
+
+To ingest on a GPU here, install a CUDA torch wheel first — `requirements.txt`
+pulls the CPU build, and `EMBED_DEVICE` (default `auto`) then picks the card up
+on its own; set it to `cuda` to make a CPU fallback an error instead of a slow
+build:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # match your driver
+EMBED_DEVICE=auto python -m ingestion.ingest --all
 ```
 
 ```bash

@@ -27,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 
 from common.log import configure_logging
 from common.config import SETTINGS
+from common.device import resolve_device
 
 # Threshold bounds are captured by `SearchRequest` when the class is created,
 # so they must be module-level names rather than read from `SETTINGS` inline.
@@ -168,8 +169,14 @@ def _load_model(target_app: FastAPI) -> None:
     # import, and so uvicorn logs the DB check above before the slow step.
     from sentence_transformers import SentenceTransformer
 
-    target_app.state.model = SentenceTransformer(SETTINGS.model_name)
-    log.info("model ready", extra={"extra_data": {"model": SETTINGS.model_name}})
+    # Resolved after the log line so the pause that follows has a cause in the
+    # log, and once so the answer is the same everywhere it is reported.
+    device = resolve_device(SETTINGS.embed_device)
+    target_app.state.model = SentenceTransformer(SETTINGS.model_name, device=device)
+    log.info(
+        "model ready",
+        extra={"extra_data": {"model": SETTINGS.model_name, "device": device}},
+    )
     target_app.state.summarize = summarize_with_llm
 
     gemini_model = os.getenv("GEMINI_MODEL")
